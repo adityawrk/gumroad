@@ -4,6 +4,7 @@ import {
   endOfMonth,
   endOfQuarter,
   endOfYear,
+  startOfDay,
   startOfMonth,
   startOfQuarter,
   startOfYear,
@@ -46,6 +47,11 @@ export const DateRangePicker = ({
     setOpen(false);
   };
   const presets = [
+    // "Today" starts at midnight so the range covers the whole current day. Both
+    // "Today" and "Last 7 days" span 7 days or fewer, which is what makes the
+    // hourly view option available on the analytics page.
+    { label: "Today", from: startOfDay(today), to: today },
+    { label: "Last 7 days", from: subDays(today, 7), to: today },
     { label: "Last 30 days", from: subDays(today, 30), to: today },
     { label: "This month", from: startOfMonth(today), to: today },
     {
