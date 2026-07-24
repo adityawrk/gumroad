@@ -4,9 +4,13 @@ require "spec_helper"
 
 describe ReissueSslCertificateForUpdatedCustomDomains do
   describe "#perform" do
+    let(:custom_domain) { create(:custom_domain) }
+
     before do
-      custom_domain = create(:custom_domain)
       custom_domain.set_ssl_certificate_issued_at!
+      allow_any_instance_of(CustomDomainVerificationService)
+        .to receive(:domains_resolving_to_gumroad)
+        .and_return([custom_domain.domain])
     end
 
     context "when valid certificates are not found for the domain" do
@@ -28,6 +32,7 @@ describe ReissueSslCertificateForUpdatedCustomDomains do
       end
 
       it "doesn't generate new certificates for the domain" do
+        expect_any_instance_of(CustomDomainVerificationService).not_to receive(:domains_resolving_to_gumroad)
         expect_any_instance_of(CustomDomain).not_to receive(:reset_ssl_certificate_issued_at!)
         expect_any_instance_of(CustomDomain).not_to receive(:generate_ssl_certificate)
 
@@ -50,6 +55,127 @@ describe ReissueSslCertificateForUpdatedCustomDomains do
 
         expect { described_class.new.perform }.not_to raise_error
         expect(invalid_record.reload.ssl_certificate_issued_at).to be_present
+      end
+    end
+
+    context "when the aggregate certificate check fails" do
+      let(:verification_service) { instance_double(CustomDomainVerificationService) }
+
+      before do
+        allow(CustomDomainVerificationService).to receive(:new).with(domain: custom_domain.domain).and_return(verification_service)
+        allow(verification_service).to receive(:has_valid_ssl_certificates?).with(no_args).and_return(false)
+        allow(verification_service).to receive(:domains_resolving_to_gumroad).and_return(["www.example.com"])
+      end
+
+      it "keeps the issuance timestamp when every resolving variant has a valid certificate" do
+        expect(verification_service)
+          .to receive(:has_valid_ssl_certificates?)
+          .with(domains: ["www.example.com"])
+          .and_return(true)
+        expect_any_instance_of(CustomDomain).not_to receive(:reset_ssl_certificate_issued_at!)
+        expect_any_instance_of(CustomDomain).not_to receive(:generate_ssl_certificate)
+
+        described_class.new.perform
+      end
+
+      it "regenerates certificates when a newly resolving variant does not have a valid certificate" do
+        allow(verification_service)
+          .to receive(:domains_resolving_to_gumroad)
+          .and_return(["example.com", "www.example.com"])
+        expect(verification_service)
+          .to receive(:has_valid_ssl_certificates?)
+          .with(domains: ["example.com", "www.example.com"])
+          .and_return(false)
+        calls = []
+        allow_any_instance_of(CustomDomain).to receive(:reset_ssl_certificate_issued_at!) { calls << :reset }
+        allow_any_instance_of(CustomDomain).to receive(:generate_ssl_certificate) { calls << :generate }
+
+        described_class.new.perform
+
+        expect(calls).to eq([:reset, :generate])
+      end
+
+      it "keeps the issuance timestamp when no variants resolve to Gumroad" do
+        allow(verification_service).to receive(:domains_resolving_to_gumroad).and_return([])
+        expect(verification_service).not_to receive(:has_valid_ssl_certificates?).with(domains: anything)
+        expect_any_instance_of(CustomDomain).not_to receive(:reset_ssl_certificate_issued_at!)
+        expect_any_instance_of(CustomDomain).not_to receive(:generate_ssl_certificate)
+
+        described_class.new.perform
+      end
+
+      it "rechecks all variants when a previously skipped hostname starts resolving" do
+        allow(verification_service)
+          .to receive(:domains_resolving_to_gumroad)
+          .and_return(["www.example.com"], ["example.com", "www.example.com"])
+        allow(verification_service)
+          .to receive(:has_valid_ssl_certificates?)
+          .with(domains: ["www.example.com"])
+          .and_return(true)
+        allow(verification_service)
+          .to receive(:has_valid_ssl_certificates?)
+          .with(domains: ["example.com", "www.example.com"])
+          .and_return(false)
+        GenerateSslCertificate.clear
+
+        described_class.new.perform
+
+        expect(custom_domain.reload.ssl_certificate_issued_at).to be_present
+        expect(GenerateSslCertificate.jobs).to be_empty
+
+        described_class.new.perform
+
+        expect(custom_domain.reload.ssl_certificate_issued_at).to be_nil
+        expect(GenerateSslCertificate.jobs.size).to eq(1)
+        expect(GenerateSslCertificate.jobs.sole["args"]).to eq([custom_domain.id])
+      end
+    end
+
+    context "when processing multiple custom domains" do
+      let(:second_custom_domain) { create(:custom_domain, domain: "second.example.com") }
+      let(:first_verification_service) { instance_double(CustomDomainVerificationService) }
+      let(:second_verification_service) { instance_double(CustomDomainVerificationService) }
+
+      before do
+        second_custom_domain.set_ssl_certificate_issued_at!
+        allow(CustomDomainVerificationService).to receive(:new) do |domain:|
+          {
+            custom_domain.domain => first_verification_service,
+            second_custom_domain.domain => second_verification_service,
+          }.fetch(domain)
+        end
+        allow(second_verification_service).to receive(:has_valid_ssl_certificates?).with(no_args).and_return(false)
+        allow(second_verification_service)
+          .to receive(:domains_resolving_to_gumroad)
+          .and_return([second_custom_domain.domain])
+        allow(second_verification_service)
+          .to receive(:has_valid_ssl_certificates?)
+          .with(domains: [second_custom_domain.domain])
+          .and_return(false)
+        GenerateSslCertificate.clear
+      end
+
+      it "continues after a domain passes the aggregate certificate check" do
+        allow(first_verification_service).to receive(:has_valid_ssl_certificates?).with(no_args).and_return(true)
+
+        described_class.new.perform
+
+        expect(custom_domain.reload.ssl_certificate_issued_at).to be_present
+        expect(second_custom_domain.reload.ssl_certificate_issued_at).to be_nil
+        expect(GenerateSslCertificate.jobs.size).to eq(1)
+        expect(GenerateSslCertificate.jobs.sole["args"]).to eq([second_custom_domain.id])
+      end
+
+      it "continues after a domain has no resolving variants" do
+        allow(first_verification_service).to receive(:has_valid_ssl_certificates?).with(no_args).and_return(false)
+        allow(first_verification_service).to receive(:domains_resolving_to_gumroad).and_return([])
+
+        described_class.new.perform
+
+        expect(custom_domain.reload.ssl_certificate_issued_at).to be_present
+        expect(second_custom_domain.reload.ssl_certificate_issued_at).to be_nil
+        expect(GenerateSslCertificate.jobs.size).to eq(1)
+        expect(GenerateSslCertificate.jobs.sole["args"]).to eq([second_custom_domain.id])
       end
     end
   end

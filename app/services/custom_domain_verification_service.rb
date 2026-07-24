@@ -62,8 +62,8 @@ class CustomDomainVerificationService
     end
   end
 
-  def has_valid_ssl_certificates?
-    domains_pointed_to_gumroad.all? do |domain|
+  def has_valid_ssl_certificates?(domains: domains_pointed_to_gumroad)
+    domains.all? do |domain|
       ssl_cert_check_redis_namespace.get(ssl_cert_check_cache_key(domain)) || has_valid_ssl_certificate?(domain)
     end
   end

@@ -194,6 +194,7 @@ describe CustomDomainVerificationService do
 
       allow(SslCertificates::Base).to receive(:new).and_return(double(ssl_file_path: "path/cert"))
       s3_double = double("s3")
+      allow(Aws::InstanceProfileCredentials).to receive(:new).and_return(double("instance profile credentials"))
       allow(Aws::S3::Resource).to receive(:new).and_return(s3_double)
       s3_object = double("s3_object")
       allow(s3_double).to receive(:bucket).and_return(double(object: s3_object))
@@ -212,6 +213,23 @@ describe CustomDomainVerificationService do
       expect_any_instance_of(Redis::Namespace).to receive(:set).with("ssl_cert_check:www.example.com", true, ex: 10.days)
 
       expect(service.has_valid_ssl_certificates?).to eq true
+    end
+
+    it "checks only the supplied domain variants" do
+      expect(OpenSSL::X509::Certificate).to receive(:new).once
+
+      expect_any_instance_of(Redis::Namespace).to receive(:get).with("ssl_cert_check:www.example.com")
+      expect_any_instance_of(Redis::Namespace).to receive(:set).with("ssl_cert_check:www.example.com", true, ex: 10.days)
+
+      expect(service.has_valid_ssl_certificates?(domains: ["www.example.com"])).to eq true
+    end
+
+    it "returns false when any supplied domain variant lacks a valid certificate" do
+      allow_any_instance_of(Redis::Namespace).to receive(:get).and_return(nil)
+      expect(service).to receive(:has_valid_ssl_certificate?).with("www.example.com").and_return(true)
+      expect(service).to receive(:has_valid_ssl_certificate?).with("example.com").and_return(false)
+
+      expect(service.has_valid_ssl_certificates?(domains: ["www.example.com", "example.com"])).to eq false
     end
   end
 end
