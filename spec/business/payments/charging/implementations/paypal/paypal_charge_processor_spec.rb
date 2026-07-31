@@ -453,6 +453,51 @@ describe PaypalChargeProcessor, :vcr do
         expect(@purchase.refunds.count).to eq(1)
       end
 
+      it "does not re-record a refund that becomes visible while waiting for the purchase lock" do
+        capture_id = "0JF852973C016714D"
+        refund_id = "PAYPAL-CONCURRENT-REFUND"
+        @purchase.update!(stripe_transaction_id: capture_id, stripe_partially_refunded: true)
+        existing_refund = create(
+          :refund,
+          purchase: @purchase,
+          processor_refund_id: refund_id,
+          amount_cents: 2_00,
+          total_transaction_cents: 2_00,
+          status: "COMPLETED"
+        )
+        event_info = paypal_refund_event(
+          refund_id:,
+          capture_id:,
+          amount: "2.00",
+          total_refunded_amount: "2.00"
+        )
+
+        # Model the webhook's first read before another transaction commits; later
+        # reads see the row after the purchase lock becomes available.
+        calls = 0
+        allow(Refund).to receive(:where).and_wrap_original do |method, *args, **kwargs|
+          if args == [{ processor_refund_id: refund_id }] || kwargs == { processor_refund_id: refund_id }
+            calls += 1
+            next Refund.none if calls == 1
+          end
+          method.call(*args, **kwargs)
+        end
+
+        balance_transaction_count = BalanceTransaction.joins(:refund)
+                                                      .where(refunds: { processor_refund_id: refund_id })
+                                                      .count
+        expect(CustomerMailer).not_to receive(:partial_refund)
+
+        expect do
+          described_class.handle_order_events(event_info)
+        end.not_to change { @purchase.reload.refunds.count }
+
+        expect(@purchase.refunds).to contain_exactly(existing_refund)
+        expect(
+          BalanceTransaction.joins(:refund).where(refunds: { processor_refund_id: refund_id }).count
+        ).to eq(balance_transaction_count)
+      end
+
       it "creates refund if there is already a refund associated with the purchase but with different " \
          "processor_refund_id" do
         @purchase.update!(stripe_transaction_id: "0JF852973C016714D")

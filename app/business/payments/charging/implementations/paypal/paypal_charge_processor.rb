@@ -260,17 +260,29 @@ class PaypalChargeProcessor
       end
     end
 
-    # Both sides are canonical US dollar cents: PayPal's refund amount was converted up front
-    # by `get_usd_cents`, and `gross_amount_refundable_cents` is canonical by definition. There
-    # is no buyer-currency (presentment) case to worry about here because PayPal charges cannot
-    # be presentment charges yet — when PayPal gains buyer-currency support this comparison,
-    # and the US-dollar flow of funds built from it below, both need revisiting.
-    usd_cents_to_refund = usd_amount_cents.present? ?
-                            [usd_amount_cents, purchase.gross_amount_refundable_cents].min :
-                            purchase.gross_amount_refundable_cents
+    purchase.reload
+    purchase.with_lock do
+      next unless purchase.successful?
 
-    flow_of_funds = FlowOfFunds.build_simple_flow_of_funds(Currency::USD, usd_cents_to_refund)
-    purchase.refund_purchase!(flow_of_funds, purchase.seller_id, processor_refund)
+      # The entry lookup can miss an uncommitted refund. Re-check under the same
+      # purchase lock held by refund_purchase! so racing deliveries serialize.
+      next if processor_refund&.id.present? && Refund.where(processor_refund_id: processor_refund.id).exists?
+
+      refundable_cents = purchase.gross_amount_refundable_cents
+      next unless refundable_cents.positive?
+
+      # Both sides are canonical US dollar cents: PayPal's refund amount was converted up front
+      # by `get_usd_cents`, and `gross_amount_refundable_cents` is canonical by definition. There
+      # is no buyer-currency (presentment) case to worry about here because PayPal charges cannot
+      # be presentment charges yet — when PayPal gains buyer-currency support this comparison,
+      # and the US-dollar flow of funds built from it below, both need revisiting.
+      usd_cents_to_refund = usd_amount_cents.present? ?
+                              [usd_amount_cents, refundable_cents].min :
+                              refundable_cents
+
+      flow_of_funds = FlowOfFunds.build_simple_flow_of_funds(Currency::USD, usd_cents_to_refund)
+      purchase.refund_purchase!(flow_of_funds, purchase.seller_id, processor_refund)
+    end
   end
   private_class_method :refund_purchase
 
