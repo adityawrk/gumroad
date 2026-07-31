@@ -72,8 +72,9 @@ class PaypalChargeProcessor
       handle_payment_capture_completed_event(event_info)
     when PaypalEventType::PAYMENT_CAPTURE_DENIED
       handle_payment_capture_denied_event(event_info)
-    when PaypalEventType::PAYMENT_CAPTURE_REVERSED,
-      PaypalEventType::PAYMENT_CAPTURE_REFUNDED
+    when PaypalEventType::PAYMENT_CAPTURE_REVERSED
+      handle_payment_capture_reversed_event(event_info)
+    when PaypalEventType::PAYMENT_CAPTURE_REFUNDED
       handle_payment_capture_refunded_event(event_info)
     end
   end
@@ -113,6 +114,71 @@ class PaypalChargeProcessor
   private_class_method :handle_payment_capture_denied_event
 
   def self.handle_payment_capture_refunded_event(event_info)
+    resource = event_info.fetch("resource")
+    refund_id = resource.fetch("id")
+    return if Refund.where(processor_refund_id: refund_id).exists?
+
+    capture_url = resource.fetch("links").find { |link| link["href"].include?("/v2/payments/captures/") }
+    capture_id = capture_url["href"].split("/").last
+
+    # The seller-payable total is cumulative for the capture; using it here overstates every
+    # partial refund after the first. Skip incomplete current amounts instead of over-debiting.
+    refund_amount = resource["amount"]
+    raw_refund_currency = refund_amount["currency_code"] if refund_amount.is_a?(Hash)
+    raw_refund_value = refund_amount["value"] if refund_amount.is_a?(Hash)
+    unless refund_amount.is_a?(Hash) && refund_amount.values_at("currency_code", "value").all?(&:present?)
+      ErrorNotifier.notify(
+        "PayPal refund webhook: current refund amount is missing; skipping automatic refund",
+        capture_id:,
+        processor_refund_id: refund_id,
+        refund_currency: raw_refund_currency,
+        refund_value: raw_refund_value,
+        webhook_event_id: event_info["id"],
+        webhook_event_type: event_info["event_type"]
+      )
+      return
+    end
+
+    begin
+      refund_currency = raw_refund_currency.to_s.downcase
+      scaled_refund_amount = BigDecimal(raw_refund_value) * unit_scaling_factor(refund_currency)
+      refund_amount_cents = scaled_refund_amount.to_i
+    rescue ArgumentError, TypeError, FloatDomainError
+      ErrorNotifier.notify(
+        "PayPal refund webhook: current refund amount is invalid; skipping automatic refund",
+        capture_id:,
+        processor_refund_id: refund_id,
+        refund_currency: raw_refund_currency,
+        refund_value: raw_refund_value,
+        webhook_event_id: event_info["id"],
+        webhook_event_type: event_info["event_type"]
+      )
+      return
+    end
+
+    unless CURRENCY_CHOICES.key?(refund_currency) && scaled_refund_amount == refund_amount_cents && refund_amount_cents.positive?
+      ErrorNotifier.notify(
+        "PayPal refund webhook: current refund amount is invalid; skipping automatic refund",
+        capture_id:,
+        processor_refund_id: refund_id,
+        refund_currency: raw_refund_currency,
+        refund_value: raw_refund_value,
+        webhook_event_id: event_info["id"],
+        webhook_event_type: event_info["event_type"]
+      )
+      return
+    end
+
+    usd_amount_cents = get_usd_cents(refund_currency.downcase, refund_amount_cents)
+    refund_purchase(capture_id:, usd_amount_cents:,
+                    processor_refund: OpenStruct.new({ id: refund_id, status: resource["status"] }),
+                    skip_if_capture_shared: true)
+  end
+  private_class_method :handle_payment_capture_refunded_event
+
+  # Refund amounts are per event, but PayPal documents reversals separately; preserve their
+  # established cumulative-total behavior.
+  def self.handle_payment_capture_reversed_event(event_info)
     refund_id = event_info["resource"]["id"]
     return if Refund.where(processor_refund_id: refund_id).exists?
 
@@ -127,7 +193,7 @@ class PaypalChargeProcessor
                     processor_refund: OpenStruct.new({ id: refund_id, status: event_info["resource"]["status"] }),
                     skip_if_capture_shared: true)
   end
-  private_class_method :handle_payment_capture_refunded_event
+  private_class_method :handle_payment_capture_reversed_event
 
   def self.refund_purchase(capture_id:, usd_amount_cents: nil, processor_refund: nil, skip_if_capture_shared: false)
     raise ArgumentError, "No PayPal transaction id found in refund webhook" if capture_id.blank?
