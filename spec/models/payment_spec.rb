@@ -688,13 +688,13 @@ describe Payment do
     describe "when the payout is created in the split mode" do
       let(:payment) do
         # Payout was sent out
-        payment = create(:payment, processor_fee_cents: 10)
+        payment = create(:payment, processor_fee_cents: 30)
 
         # IPN was received and one of the split parts was in the pending state
         payment.was_created_in_split_mode = true
         payment.split_payments_info = [
-          { "unique_id" => "SPLIT_1-1", "state" => "completed", "correlation_id" => "fcf", "amount_cents" => 100, "errors" => [], "txn_id" => "02P" },
-          { "unique_id" => "SPLIT_1-2", "state" => "pending", "correlation_id" => "6db", "amount_cents" => 50, "errors" => [], "txn_id" => "4LR" }
+          { "unique_id" => "SPLIT_1-1", "state" => "completed", "correlation_id" => "fcf", "amount_cents" => 100, "processor_fee_cents" => 10, "errors" => [], "txn_id" => "02P" },
+          { "unique_id" => "SPLIT_1-2", "state" => "pending", "correlation_id" => "6db", "amount_cents" => 50, "processor_fee_cents" => 20, "errors" => [], "txn_id" => "4LR" }
         ]
         payment.save!
         payment
@@ -702,36 +702,53 @@ describe Payment do
 
       it "fetches and sets the new payment status from PayPal for all split parts" do
         expect(PaypalPayoutProcessor).to(
-          receive(:get_latest_payment_state_from_paypal).with(100,
-                                                              "02P",
-                                                              payment.created_at.beginning_of_day - 1.day,
-                                                              "completed").and_return("completed"))
+          receive(:get_latest_payment_details_from_paypal).with(100,
+                                                                "02P",
+                                                                payment.created_at.beginning_of_day - 1.day,
+                                                                "completed").and_return(
+                                                                  state: "completed",
+                                                                  processor_fee_cents: 10,
+                                                                  legacy_accounted_fee_cents: 10
+                                                                ))
 
         expect(PaypalPayoutProcessor).to(
-          receive(:get_latest_payment_state_from_paypal).with(50,
-                                                              "4LR",
-                                                              payment.created_at.beginning_of_day - 1.day,
-                                                              "pending").and_return("completed"))
+          receive(:get_latest_payment_details_from_paypal).with(50,
+                                                                "4LR",
+                                                                payment.created_at.beginning_of_day - 1.day,
+                                                                "pending").and_return(
+                                                                  state: "completed",
+                                                                  processor_fee_cents: 20,
+                                                                  legacy_accounted_fee_cents: 20
+                                                                ))
 
         expect(PaypalPayoutProcessor).to receive(:update_split_payment_state).and_call_original
 
         expect do
           payment.send(:sync_with_paypal)
         end.to change { payment.reload.state }.from("processing").to("completed")
+        expect(payment.processor_fee_cents).to eq 30
       end
 
       it "adds an error if not all split parts statuses are same" do
         expect(PaypalPayoutProcessor).to(
-          receive(:get_latest_payment_state_from_paypal).with(100,
-                                                              "02P",
-                                                              payment.created_at.beginning_of_day - 1.day,
-                                                              "completed").and_return("completed"))
+          receive(:get_latest_payment_details_from_paypal).with(100,
+                                                                "02P",
+                                                                payment.created_at.beginning_of_day - 1.day,
+                                                                "completed").and_return(
+                                                                  state: "completed",
+                                                                  processor_fee_cents: 10,
+                                                                  legacy_accounted_fee_cents: 10
+                                                                ))
 
         expect(PaypalPayoutProcessor).to(
-          receive(:get_latest_payment_state_from_paypal).with(50,
-                                                              "4LR",
-                                                              payment.created_at.beginning_of_day - 1.day,
-                                                              "pending").and_return("pending"))
+          receive(:get_latest_payment_details_from_paypal).with(50,
+                                                                "4LR",
+                                                                payment.created_at.beginning_of_day - 1.day,
+                                                                "pending").and_return(
+                                                                  state: "pending",
+                                                                  processor_fee_cents: 20,
+                                                                  legacy_accounted_fee_cents: 20
+                                                                ))
 
         expect(PaypalPayoutProcessor).not_to receive(:update_split_payment_state)
 

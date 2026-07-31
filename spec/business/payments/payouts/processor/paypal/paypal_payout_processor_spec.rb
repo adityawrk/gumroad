@@ -1014,10 +1014,21 @@ describe PaypalPayoutProcessor do
   describe "handle_paypal_event_for_split_payment" do
     before do
       @creator = create(:singaporean_user_with_compliance_info, payment_address: "amir_1351103838_biz@gumroad.com", should_paypal_payout_be_split: true)
-      @balance1_1 = create(:balance, user: @creator, amount_cents: 21_000_00, date: Date.today - 9)
-      @balance1_2 = create(:balance, user: @creator, amount_cents: 1_000_00, date: Date.today - 10)
+      merchant_account = create(:merchant_account, user: nil)
+      @balance1_1 = create(:balance, user: @creator, merchant_account:, amount_cents: 21_000_00, date: Date.today - 9)
+      @balance1_2 = create(:balance, user: @creator, merchant_account:, amount_cents: 1_000_00, date: Date.today - 10)
       WebMock.stub_request(:post, PAYPAL_ENDPOINT)
              .to_return(body: "TIMESTAMP=2012%2d10%2d26T20%3a29%3a14Z&CORRELATIONID=c51c5e0cecbce&ACK=Success&VERSION=90%2e0&BUILD=4072860")
+    end
+
+    def handle_split_payment_ipn(payment, part:, status:, fee: nil)
+      paypal_event = {
+        "masspay_txn_id_0" => "sometxn#{part}",
+        "status_0" => status,
+        "unique_id_0" => "#{PaypalPayoutProcessor::SPLIT_PAYMENT_UNIQUE_ID_PREFIX}#{payment.id}-#{part}"
+      }
+      paypal_event["mc_fee_0"] = fee unless fee.nil?
+      described_class.handle_paypal_event(paypal_event)
     end
 
     it "creates the correct payment objects and update them once the IPN comes in" do
@@ -1068,6 +1079,8 @@ describe PaypalPayoutProcessor do
       expect(payment.split_payments_info[1]["state"]).to eq "completed"
       expect(payment.split_payments_info[0]["txn_id"]).to eq "sometxn1"
       expect(payment.split_payments_info[1]["txn_id"]).to eq "sometxn2"
+      expect(payment.split_payments_info[0]["processor_fee_cents"]).to eq 300
+      expect(payment.split_payments_info[1]["processor_fee_cents"]).to eq 200
       expect(payment.processor_fee_cents).to eq 500
     end
 
@@ -1123,6 +1136,7 @@ describe PaypalPayoutProcessor do
       expect(payment.reload.state).to eq "processing"
       expect(payment.split_payments_info[0]["state"]).to eq "pending"
       expect(payment.split_payments_info[1]["state"]).to eq "completed"
+      expect(payment.processor_fee_cents).to eq 500
 
       # IPN for the first split payment again with status as completed
       described_class.handle_paypal_event("payment_date" => payment.created_at.strftime("%T+%b+%d,+%Y+%Z"),
@@ -1135,6 +1149,98 @@ describe PaypalPayoutProcessor do
       expect(payment.reload.state).to eq "completed"
       expect(payment.split_payments_info[0]["state"]).to eq "completed"
       expect(payment.split_payments_info[1]["state"]).to eq "completed"
+      expect(payment.processor_fee_cents).to eq 500
+    end
+
+    it "records the fee once when PayPal repeats a pending IPN" do
+      Payouts.create_payments_for_balances_up_to_date_for_users(Date.yesterday, PayoutProcessorType::PAYPAL, [@creator])
+      payment = @creator.payments.last
+
+      handle_split_payment_ipn(payment, part: 1, status: "Pending", fee: "0.29")
+      handle_split_payment_ipn(payment, part: 1, status: "Pending", fee: "0.29")
+
+      expect(payment.reload.state).to eq "processing"
+      expect(payment.split_payments_info[0]["state"]).to eq "pending"
+      expect(payment.processor_fee_cents).to eq 29
+    end
+
+    it "adjusts the total when PayPal corrects a pending part's fee" do
+      Payouts.create_payments_for_balances_up_to_date_for_users(Date.yesterday, PayoutProcessorType::PAYPAL, [@creator])
+      payment = @creator.payments.last
+
+      handle_split_payment_ipn(payment, part: 1, status: "Pending", fee: "3")
+      handle_split_payment_ipn(payment, part: 1, status: "Completed", fee: "2")
+
+      expect(payment.reload.processor_fee_cents).to eq 200
+      expect(payment.split_payments_info[0]["processor_fee_cents"]).to eq 200
+    end
+
+    it "records a fee supplied after a fee-less pending IPN" do
+      Payouts.create_payments_for_balances_up_to_date_for_users(Date.yesterday, PayoutProcessorType::PAYPAL, [@creator])
+      payment = @creator.payments.last
+
+      handle_split_payment_ipn(payment, part: 1, status: "Pending")
+      expect(payment.reload.processor_fee_cents).to eq 0
+
+      handle_split_payment_ipn(payment, part: 1, status: "Completed", fee: "3")
+
+      expect(payment.reload.processor_fee_cents).to eq 300
+      expect(payment.split_payments_info[0]["processor_fee_cents"]).to eq 300
+    end
+
+    it "does not count a legacy pending part's fee again" do
+      Payouts.create_payments_for_balances_up_to_date_for_users(Date.yesterday, PayoutProcessorType::PAYPAL, [@creator])
+      payment = @creator.payments.last
+      payment.split_payments_info[0]["state"] = "pending"
+      payment.split_payments_info[0]["txn_id"] = "sometxn1"
+      payment.split_payments_info[0].delete("processor_fee_cents")
+      payment.processor_fee_cents = 28
+      payment.save!
+
+      handle_split_payment_ipn(payment, part: 1, status: "Completed", fee: "0.29")
+
+      expect(payment.reload.processor_fee_cents).to eq 29
+      expect(payment.split_payments_info[0]["processor_fee_cents"]).to eq 29
+    end
+
+    it "records a later fee after a legacy processing part receives a fee-less pending IPN" do
+      Payouts.create_payments_for_balances_up_to_date_for_users(Date.yesterday, PayoutProcessorType::PAYPAL, [@creator])
+      payment = @creator.payments.last
+      payment.split_payments_info[0].delete("processor_fee_cents")
+      payment.save!
+
+      handle_split_payment_ipn(payment, part: 1, status: "Pending")
+      expect(payment.reload.split_payments_info[0]["processor_fee_cents"]).to eq 0
+
+      handle_split_payment_ipn(payment, part: 1, status: "Completed", fee: "3")
+
+      expect(payment.reload.processor_fee_cents).to eq 300
+      expect(payment.split_payments_info[0]["processor_fee_cents"]).to eq 300
+    end
+
+    it "preserves an accounted fee when a later IPN leaves it blank" do
+      Payouts.create_payments_for_balances_up_to_date_for_users(Date.yesterday, PayoutProcessorType::PAYPAL, [@creator])
+      payment = @creator.payments.last
+
+      handle_split_payment_ipn(payment, part: 1, status: "Pending", fee: "3")
+      handle_split_payment_ipn(payment, part: 1, status: "Completed", fee: "")
+
+      expect(payment.reload.processor_fee_cents).to eq 300
+      expect(payment.split_payments_info[0]["processor_fee_cents"]).to eq 300
+    end
+
+    it "rolls fee accounting back when the state update fails" do
+      Payouts.create_payments_for_balances_up_to_date_for_users(Date.yesterday, PayoutProcessorType::PAYPAL, [@creator])
+      payment = @creator.payments.last
+      allow(described_class).to receive(:update_split_payment_state).and_raise("state update failed")
+
+      expect do
+        handle_split_payment_ipn(payment, part: 1, status: "Completed", fee: "3")
+      end.to raise_error("state update failed")
+
+      expect(payment.reload.processor_fee_cents).to eq 0
+      expect(payment.split_payments_info[0]["state"]).to eq "processing"
+      expect(payment.split_payments_info[0]["processor_fee_cents"]).to eq 0
     end
 
     it "is idempotent" do
@@ -1168,6 +1274,26 @@ describe PaypalPayoutProcessor do
 
       expect(payment.split_payments_info.count).to eq 2
       expect(payment.processor_fee_cents).to eq 500
+    end
+  end
+
+  describe ".get_latest_payment_details_from_paypal" do
+    it "normalizes PayPal's negative fee and preserves the legacy cents conversion" do
+      paypal_response = {
+        "L_STATUS0" => "Completed",
+        "L_AMT0" => "-1.00",
+        "L_TRANSACTIONID0" => "4LR",
+        "L_FEEAMT0" => "-0.29"
+      }
+      WebMock.stub_request(:post, PAYPAL_ENDPOINT).to_return(body: paypal_response.to_query)
+
+      details = described_class.get_latest_payment_details_from_paypal(100, "4LR", Date.yesterday, "pending")
+
+      expect(details).to eq(
+        state: "completed",
+        processor_fee_cents: 29,
+        legacy_accounted_fee_cents: 28
+      )
     end
   end
 
