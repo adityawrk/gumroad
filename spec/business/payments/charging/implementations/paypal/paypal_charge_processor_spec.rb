@@ -475,10 +475,21 @@ describe PaypalChargeProcessor, :vcr do
         # Model the webhook's first read before another transaction commits; later
         # reads see the row after the purchase lock becomes available.
         calls = 0
+        purchase_lock_held = false
+        allow_any_instance_of(Purchase).to receive(:with_lock).and_wrap_original do |method, *args, **kwargs, &block|
+          method.call(*args, **kwargs) do
+            purchase_lock_held = true
+            block.call
+          ensure
+            purchase_lock_held = false
+          end
+        end
         allow(Refund).to receive(:where).and_wrap_original do |method, *args, **kwargs|
           if args == [{ processor_refund_id: refund_id }] || kwargs == { processor_refund_id: refund_id }
             calls += 1
             next Refund.none if calls == 1
+
+            expect(purchase_lock_held).to be(true)
           end
           method.call(*args, **kwargs)
         end
@@ -496,6 +507,7 @@ describe PaypalChargeProcessor, :vcr do
         expect(
           BalanceTransaction.joins(:refund).where(refunds: { processor_refund_id: refund_id }).count
         ).to eq(balance_transaction_count)
+        expect(calls).to be >= 2
       end
 
       it "creates refund if there is already a refund associated with the purchase but with different " \

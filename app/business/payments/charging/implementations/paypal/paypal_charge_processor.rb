@@ -271,11 +271,8 @@ class PaypalChargeProcessor
       refundable_cents = purchase.gross_amount_refundable_cents
       next unless refundable_cents.positive?
 
-      # Both sides are canonical US dollar cents: PayPal's refund amount was converted up front
-      # by `get_usd_cents`, and `gross_amount_refundable_cents` is canonical by definition. There
-      # is no buyer-currency (presentment) case to worry about here because PayPal charges cannot
-      # be presentment charges yet — when PayPal gains buyer-currency support this comparison,
-      # and the US-dollar flow of funds built from it below, both need revisiting.
+      # Both values are canonical US dollar cents. When PayPal gains buyer-currency support,
+      # this comparison and the US-dollar flow of funds below must be revisited.
       usd_cents_to_refund = usd_amount_cents.present? ?
                               [usd_amount_cents, refundable_cents].min :
                               refundable_cents
