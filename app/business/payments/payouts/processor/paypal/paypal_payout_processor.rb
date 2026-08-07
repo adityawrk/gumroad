@@ -395,6 +395,7 @@ class PaypalPayoutProcessor
         state: transaction_succeeded ? "processing" : "failed",
         correlation_id:,
         amount_cents: split_payment_amount_cents,
+        processor_fee_cents: 0,
         errors:
       }
       payment.split_payments_info.nil? ? payment.split_payments_info = [split_payment_info] : payment.split_payments_info << split_payment_info
@@ -510,6 +511,7 @@ class PaypalPayoutProcessor
       split_payment_info = payment.split_payments_info[split_payment_index]
       return unless %w[processing pending].include?(split_payment_info["state"])
 
+      previous_state = split_payment_info["state"]
       split_payment_info["txn_id"] = paypal_event["masspay_txn_id"]
       split_payment_info["state"] = paypal_event["status"].try(:downcase)
       # Keep the rejection code PayPal sent for this part. Without it a split payout that PayPal
@@ -518,7 +520,22 @@ class PaypalPayoutProcessor
       # rejection from a retryable one, so a doomed split payout would be re-attempted every week
       # forever (gumroad-private#1478).
       split_payment_info["reason_code"] = paypal_event["reason_code"] if paypal_event["reason_code"].present?
-      payment.processor_fee_cents += 100 * paypal_event["mc_fee"].to_f if paypal_event["mc_fee"]
+      raw_processor_fee = paypal_event["mc_fee"].presence
+      processor_fee = BigDecimal(raw_processor_fee, exception: false) if raw_processor_fee
+      processor_fee = nil unless processor_fee&.finite?
+      processor_fee_cents = (processor_fee * 100).round.to_i if processor_fee
+      if processor_fee_cents
+        legacy_accounted_fee_cents = (100 * raw_processor_fee.to_f).to_i
+        record_split_payment_processor_fee(
+          payment,
+          split_payment_info,
+          processor_fee_cents,
+          previous_state:,
+          legacy_accounted_fee_cents:
+        )
+      elsif previous_state == "processing" && !split_payment_info.key?("processor_fee_cents")
+        split_payment_info["processor_fee_cents"] = 0
+      end
       payment.save!
 
       # PayPal is sending incorrect payment status ('Pending') in the IPN callback for some of the payments where the
@@ -549,6 +566,21 @@ class PaypalPayoutProcessor
     end
   end
 
+  def self.record_split_payment_processor_fee(payment, split_payment_info, processor_fee_cents, previous_state:, legacy_accounted_fee_cents:)
+    previously_accounted_fee_cents =
+      if split_payment_info.key?("processor_fee_cents")
+        split_payment_info["processor_fee_cents"].to_i
+      elsif previous_state != "processing"
+        # Old parts that left processing already contributed their fee before per-part tracking existed.
+        legacy_accounted_fee_cents
+      else
+        0
+      end
+
+    payment.processor_fee_cents += processor_fee_cents - previously_accounted_fee_cents
+    split_payment_info["processor_fee_cents"] = processor_fee_cents
+  end
+
   # Why the whole split payout failed, in the same "PAYPAL <code>" form a single payout records.
   #
   # Every part of a split payout goes to the same PayPal address, so when they all fail they nearly
@@ -577,6 +609,10 @@ class PaypalPayoutProcessor
   end
 
   def self.get_latest_payment_state_from_paypal(amount_cents, transaction_id, start_date, current_state)
+    get_latest_payment_details_from_paypal(amount_cents, transaction_id, start_date, current_state)[:state]
+  end
+
+  def self.get_latest_payment_details_from_paypal(amount_cents, transaction_id, start_date, current_state)
     params = PAYPAL_API_PARAMS.merge("METHOD" => "TransactionSearch", "TRANSACTIONCLASS" => "Sent")
     amt_str = format("%.2f", (amount_cents / 100.0).to_s)
     paypal_response = HTTParty.post(PAYPAL_ENDPOINT, body: params.merge("AMT" => amt_str,
@@ -587,9 +623,16 @@ class PaypalPayoutProcessor
     if response["L_STATUS0"].blank? || response["L_AMT0"].blank? || response["L_TRANSACTIONID0"].blank? || response["L_FEEAMT0"].blank? ||
        response["L_TIMESTAMP1"].present? ||
        %w[unclaimed completed].exclude?(response["L_STATUS0"].downcase)
-      current_state
+      { state: current_state, processor_fee_cents: nil, legacy_accounted_fee_cents: nil }
     else
-      response["L_STATUS0"].downcase
+      raw_processor_fee = response["L_FEEAMT0"]
+      processor_fee = BigDecimal(raw_processor_fee, exception: false)
+      processor_fee = nil unless processor_fee&.finite?
+      {
+        state: response["L_STATUS0"].downcase,
+        processor_fee_cents: ((processor_fee * 100).round.abs.to_i if processor_fee),
+        legacy_accounted_fee_cents: ((100 * raw_processor_fee.to_f).to_i.abs if processor_fee)
+      }
     end
   end
 
