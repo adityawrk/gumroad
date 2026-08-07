@@ -155,6 +155,29 @@ describe Api::V2::SalesController do
         end
       end
 
+      it "includes older sales whose IDs are higher than the cursor ID" do
+        boundary = create(:purchase, link: @product, seller: @seller, created_at: 2.days.ago)
+        older_sale = create(:purchase, link: @product, seller: @seller, created_at: 3.days.ago)
+        page_key = "#{boundary.created_at.to_fs(:usec)}-#{ObfuscateIds.encrypt_numeric(boundary.id)}"
+
+        get :index, params: @params.merge(page_key:)
+
+        expect(response.parsed_body["sales"].pluck("id")).to include(older_sale.external_id)
+      end
+
+      it "uses IDs to paginate sales with identical timestamps" do
+        created_at = 2.days.ago
+        lower_id_sale = create(:purchase, link: @product, seller: @seller, created_at:)
+        boundary = create(:purchase, link: @product, seller: @seller, created_at:)
+        page_key = "#{boundary.created_at.to_fs(:usec)}-#{ObfuscateIds.encrypt_numeric(boundary.id)}"
+
+        get :index, params: @params.merge(page_key:)
+
+        sale_ids = response.parsed_body["sales"].pluck("id")
+        expect(sale_ids).to include(lower_id_sale.external_id)
+        expect(sale_ids).not_to include(boundary.external_id)
+      end
+
       it "returns the correct link to the next pages from second page onwards" do
         per_page = Api::V2::SalesController::RESULTS_PER_PAGE
         create_list(:purchase, (per_page * 3), link: @product)
