@@ -5,6 +5,9 @@ require "shared_examples/authorized_oauth_v1_api_method"
 
 describe Api::V2::SubscribersController do
   before do
+    MerchantAccount.gumroad(StripeChargeProcessor.charge_processor_id) ||
+      create(:merchant_account, user: nil, charge_processor_merchant_id: "acct_#{SecureRandom.hex(8)}")
+
     @seller = create(:user)
     @subscriber = create(:user)
     @app = create(:oauth_application, owner: create(:user))
@@ -134,6 +137,34 @@ describe Api::V2::SubscribersController do
           @subscription_2 = create(:subscription, link: @product, user: @subscriber)
           create(:membership_purchase, link: @product, subscription: @subscription_2)
           @params.merge!(paginated: "true")
+        end
+
+        it "includes older subscribers whose IDs are higher than the cursor ID" do
+          @product.subscriptions.update_all(created_at: 1.day.ago)
+          boundary = create(:subscription, link: @product, user: @subscriber, created_at: 2.days.ago)
+          create(:membership_purchase, link: @product, subscription: boundary)
+          older_subscription = create(:subscription, link: @product, user: @subscriber, created_at: 3.days.ago)
+          create(:membership_purchase, link: @product, subscription: older_subscription)
+          page_key = "#{boundary.created_at.to_fs(:usec)}-#{ObfuscateIds.encrypt_numeric(boundary.id)}"
+
+          get @action, params: @params.merge(page_key:)
+
+          expect(response.parsed_body["subscribers"].pluck("id")).to include(older_subscription.external_id)
+        end
+
+        it "uses IDs to paginate subscribers with identical timestamps" do
+          created_at = 2.days.ago
+          lower_id_subscription = create(:subscription, link: @product, user: @subscriber, created_at:)
+          create(:membership_purchase, link: @product, subscription: lower_id_subscription)
+          boundary = create(:subscription, link: @product, user: @subscriber, created_at:)
+          create(:membership_purchase, link: @product, subscription: boundary)
+          page_key = "#{boundary.created_at.to_fs(:usec)}-#{ObfuscateIds.encrypt_numeric(boundary.id)}"
+
+          get @action, params: @params.merge(page_key:)
+
+          subscriber_ids = response.parsed_body["subscribers"].pluck("id")
+          expect(subscriber_ids).to include(lower_id_subscription.external_id)
+          expect(subscriber_ids).not_to include(boundary.external_id)
         end
 
         it "returns a link to the next page if there are more than the limit of sales" do
