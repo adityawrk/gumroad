@@ -158,13 +158,15 @@ describe Api::V2::SubscribersController do
           create(:membership_purchase, link: @product, subscription: lower_id_subscription)
           boundary = create(:subscription, link: @product, user: @subscriber, created_at:)
           create(:membership_purchase, link: @product, subscription: boundary)
+          higher_id_subscription = create(:subscription, link: @product, user: @subscriber, created_at:)
+          create(:membership_purchase, link: @product, subscription: higher_id_subscription)
           page_key = "#{boundary.created_at.to_fs(:usec)}-#{ObfuscateIds.encrypt_numeric(boundary.id)}"
 
           get @action, params: @params.merge(page_key:)
 
           subscriber_ids = response.parsed_body["subscribers"].pluck("id")
           expect(subscriber_ids).to include(lower_id_subscription.external_id)
-          expect(subscriber_ids).not_to include(boundary.external_id)
+          expect(subscriber_ids).not_to include(boundary.external_id, higher_id_subscription.external_id)
         end
 
         it "returns a link to the next page if there are more than the limit of sales" do
