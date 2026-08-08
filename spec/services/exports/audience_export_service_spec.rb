@@ -3,6 +3,11 @@
 require "spec_helper"
 
 describe Exports::AudienceExportService do
+  before do
+    MerchantAccount.gumroad(StripeChargeProcessor.charge_processor_id) ||
+      create(:merchant_account, user: nil, charge_processor_merchant_id: "acct_#{SecureRandom.hex(8)}")
+  end
+
   describe "#perform" do
     let!(:user) { create(:user) }
     let!(:follower) { create(:active_follower, email: "follower@gumroad.com", user: user, created_at: 1.day.ago) }
@@ -26,6 +31,16 @@ describe Exports::AudienceExportService do
         expect(headers).to eq(described_class::FIELDS)
         expect(data_row.first).to eq(follower.email)
         expect(data_row.second).to eq(follower.created_at.to_s)
+      end
+
+      it "keeps selected legacy rows without a subscribed time" do
+        legacy_follower = create(:active_follower, email: "legacy@example.com", user:)
+        user.audience_members.find_by!(email: legacy_follower.email).update_columns(min_created_at: nil)
+
+        rows = CSV.parse(subject.perform.tempfile.read)
+
+        expect(rows.drop(1).map(&:first)).to eq([legacy_follower.email, follower.email])
+        expect(rows[1].second).to be_nil
       end
     end
 
@@ -62,19 +77,23 @@ describe Exports::AudienceExportService do
     context "when options has all audience types" do
       let(:options) { { followers: true, customers: true, affiliates: true } }
 
-      it "generates csv with all audience types" do
+      it "generates all audience types in subscribed-time order across batches" do
+        stub_const("#{described_class}::BATCH_SIZE", 2)
+        tied_follower = create(:active_follower, email: "tied@example.com", user:, created_at: customer.created_at)
         rows = CSV.parse(subject.perform.tempfile.read)
 
-        expect(rows.size).to eq(4)
+        expect(rows.size).to eq(5)
         headers = rows.first
 
         expect(headers).to eq(described_class::FIELDS)
-        expect(rows[1].first).to eq(follower.email)
-        expect(rows[1].second).to eq(follower.created_at.to_s)
+        expect(rows[1].first).to eq(affiliate_user.email)
+        expect(rows[1].second).to eq(direct_affiliate.created_at.to_s)
         expect(rows[2].first).to eq(customer.email)
         expect(rows[2].second).to eq(customer.created_at.to_s)
-        expect(rows[3].first).to eq(affiliate_user.email)
-        expect(rows[3].second).to eq(direct_affiliate.created_at.to_s)
+        expect(rows[3].first).to eq(tied_follower.email)
+        expect(rows[3].second).to eq(tied_follower.created_at.to_s)
+        expect(rows[4].first).to eq(follower.email)
+        expect(rows[4].second).to eq(follower.created_at.to_s)
       end
     end
 
@@ -89,10 +108,10 @@ describe Exports::AudienceExportService do
         headers = rows.first
 
         expect(headers).to eq(described_class::FIELDS)
-        expect(rows[1].first).to eq(follower.email)
-        expect(rows[1].second).to eq(follower.created_at.to_s)
-        expect(rows[2].first).to eq(follower_customer.email)
-        expect(rows[2].second).to eq(follower_customer.created_at.to_s)
+        expect(rows[1].first).to eq(follower_customer.email)
+        expect(rows[1].second).to eq(follower_customer.created_at.to_s)
+        expect(rows[2].first).to eq(follower.email)
+        expect(rows[2].second).to eq(follower.created_at.to_s)
       end
     end
 
