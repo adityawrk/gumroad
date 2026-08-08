@@ -169,13 +169,14 @@ describe Api::V2::SalesController do
         created_at = 2.days.ago
         lower_id_sale = create(:purchase, link: @product, seller: @seller, created_at:)
         boundary = create(:purchase, link: @product, seller: @seller, created_at:)
+        higher_id_sale = create(:purchase, link: @product, seller: @seller, created_at:)
         page_key = "#{boundary.created_at.to_fs(:usec)}-#{ObfuscateIds.encrypt_numeric(boundary.id)}"
 
         get :index, params: @params.merge(page_key:)
 
         sale_ids = response.parsed_body["sales"].pluck("id")
         expect(sale_ids).to include(lower_id_sale.external_id)
-        expect(sale_ids).not_to include(boundary.external_id)
+        expect(sale_ids).not_to include(boundary.external_id, higher_id_sale.external_id)
       end
 
       it "returns the correct link to the next pages from second page onwards" do
