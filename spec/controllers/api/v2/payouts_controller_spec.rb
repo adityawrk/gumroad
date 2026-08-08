@@ -288,6 +288,16 @@ describe Api::V2::PayoutsController do
           expect(response.parsed_body["payouts"]).to be_all { _1["id"].present? }
         end
 
+        it "filters multiple upcoming payouts to the requested date range" do
+          create(:balance, user: @seller, amount_cents: 200_00, date: Date.new(2025, 9, 15), state: "unpaid")
+          @params.merge!(after: Date.new(2025, 9, 19).iso8601, before: Date.new(2025, 9, 26).iso8601)
+
+          get :index, params: @params
+
+          upcoming_payouts = response.parsed_body["payouts"].select { _1["id"].nil? }
+          expect(upcoming_payouts.pluck("created_at")).to eq([Time.zone.parse("2025-09-25").iso8601])
+        end
+
         it "does not include upcoming payout when end_date is before current payout end date" do
           past_date = 1.week.ago.strftime("%Y-%m-%d")
           @params.merge!(before: past_date)
