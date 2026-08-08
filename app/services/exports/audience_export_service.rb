@@ -2,7 +2,6 @@
 
 class Exports::AudienceExportService
   FIELDS = ["Subscriber Email", "Subscribed Time"].freeze
-  BATCH_SIZE = 1_000
 
   def initialize(user, options = {})
     @user = user
@@ -38,32 +37,13 @@ class Exports::AudienceExportService
 
   private
     def write_rows_in_subscribed_order(csv, query)
-      query.where(min_created_at: nil).find_each do |member|
-        csv << [member.email, member.min_created_at]
-      end
+      ordered_query = query.reorder(:min_created_at, :id).reselect(:email, :min_created_at)
 
-      last_created_at = nil
-      last_id = nil
-
-      loop do
-        batch = query.where.not(min_created_at: nil)
-        if last_created_at
-          batch = batch.where(
-            "min_created_at > ? OR (min_created_at = ? AND id > ?)",
-            last_created_at,
-            last_created_at,
-            last_id,
-          )
-        end
-
-        # find_each discards non-primary-key ordering, so page on the requested order explicitly.
-        batch = batch.order(:min_created_at, :id).limit(BATCH_SIZE).to_a
-        break if batch.empty?
-
-        batch.each { csv << [_1.email, _1.min_created_at] }
-        last_created_at = batch.last.min_created_at
-        last_id = batch.last.id
-      end
+      # One streamed statement keeps membership and ordering stable while bounding application memory.
+      result = AudienceMember.connection.raw_connection.query(ordered_query.to_sql, stream: true, cache_rows: false, as: :array)
+      result.each { csv << _1 }
+    ensure
+      result&.free
     end
 
     def validate_options!

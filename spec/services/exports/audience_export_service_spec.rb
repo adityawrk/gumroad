@@ -36,6 +36,7 @@ describe Exports::AudienceExportService do
       it "keeps selected legacy rows without a subscribed time" do
         legacy_follower = create(:active_follower, email: "legacy@example.com", user:)
         user.audience_members.find_by!(email: legacy_follower.email).update_columns(min_created_at: nil)
+        user.audience_members.find_by!(email: customer.email).update_columns(min_created_at: nil)
 
         rows = CSV.parse(subject.perform.tempfile.read)
 
@@ -77,9 +78,13 @@ describe Exports::AudienceExportService do
     context "when options has all audience types" do
       let(:options) { { followers: true, customers: true, affiliates: true } }
 
-      it "generates all audience types in subscribed-time order across batches" do
-        stub_const("#{described_class}::BATCH_SIZE", 2)
+      it "generates all audience types in subscribed-time order with deterministic ties" do
         tied_follower = create(:active_follower, email: "tied@example.com", user:, created_at: customer.created_at)
+        expect(AudienceMember.connection.raw_connection).to receive(:query).once.with(
+          instance_of(String),
+          hash_including(stream: true, cache_rows: false, as: :array),
+        ).and_call_original
+
         rows = CSV.parse(subject.perform.tempfile.read)
 
         expect(rows.size).to eq(5)
