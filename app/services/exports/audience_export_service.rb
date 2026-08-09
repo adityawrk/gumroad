@@ -39,11 +39,17 @@ class Exports::AudienceExportService
     def write_rows_in_subscribed_order(csv, query)
       ordered_query = query.reorder(:min_created_at, :id).reselect(:email, :min_created_at)
 
-      # One streamed statement keeps membership and ordering stable while bounding application memory.
-      result = AudienceMember.connection.raw_connection.query(ordered_query.to_sql, stream: true, cache_rows: false, as: :array)
-      result.each { csv << _1 }
-    ensure
-      result&.free
+      # Open through Makara, then consume outside its retry scope so failover cannot replay rows.
+      # One statement also keeps membership and ordering stable without loading every row in memory.
+      AudienceMember.connection.with_streaming_result(
+        ordered_query.to_sql,
+        "Audience Export",
+        stream: true,
+        cache_rows: false,
+        as: :array,
+      ) do |result|
+        result.each { csv << _1 }
+      end
     end
 
     def validate_options!

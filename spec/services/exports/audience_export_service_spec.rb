@@ -80,16 +80,26 @@ describe Exports::AudienceExportService do
 
       it "generates all audience types in subscribed-time order with deterministic ties" do
         tied_follower = create(:active_follower, email: "tied@example.com", user:, created_at: customer.created_at)
-        expect(AudienceMember.connection.raw_connection).to receive(:query).once.with(
+        expect(AudienceMember.connection).to receive(:with_streaming_result).once.with(
           instance_of(String),
-          hash_including(stream: true, cache_rows: false, as: :array),
+          "Audience Export",
+          stream: true,
+          cache_rows: false,
+          as: :array,
         ).and_call_original
+        sql_events = []
 
-        rows = CSV.parse(subject.perform.tempfile.read)
+        rows = ActiveSupport::Notifications.subscribed(
+          ->(*, payload) { sql_events << payload if payload[:name] == "Audience Export" },
+          "sql.active_record",
+        ) do
+          CSV.parse(subject.perform.tempfile.read)
+        end
 
         expect(rows.size).to eq(5)
         headers = rows.first
 
+        expect(sql_events.one?).to be(true)
         expect(headers).to eq(described_class::FIELDS)
         expect(rows[1].first).to eq(affiliate_user.email)
         expect(rows[1].second).to eq(direct_affiliate.created_at.to_s)
