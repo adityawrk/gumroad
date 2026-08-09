@@ -5,6 +5,10 @@ require "spec_helper"
 describe Affiliate::Sorting do
   describe ".sorted_by" do
     let!(:seller) { create(:named_seller) }
+    let!(:gumroad_merchant_account) do
+      MerchantAccount.gumroad(StripeChargeProcessor.charge_processor_id) ||
+        create(:merchant_account, user: nil, charge_processor_merchant_id: "acct_#{SecureRandom.hex(8)}")
+    end
     let!(:product1) { create(:product, user: seller, name: "p1") }
     let!(:product2) { create(:product, user: seller, name: "p2") }
     let!(:product3) { create(:product, user: seller, name: "p3") }
@@ -79,6 +83,54 @@ describe Affiliate::Sorting do
 
       expect(seller.direct_affiliates.sorted_by(key: "fee_percent", direction: "asc")).to eq(order)
       expect(seller.direct_affiliates.sorted_by(key: "fee_percent", direction: "desc")).to eq(order.reverse)
+    end
+
+    context "when an affiliate has inactive products" do
+      let!(:inactive_product_1) { create(:product, user: seller) }
+      let!(:inactive_product_2) { create(:product, user: seller) }
+      let!(:active_product) { create(:product, user: seller) }
+      let!(:affiliate_with_inactive_products) do
+        create(:direct_affiliate, seller:, affiliate_basis_points: 40_00, products: [inactive_product_1, inactive_product_2, active_product])
+      end
+
+      before do
+        affiliate_with_inactive_products.product_affiliates.update_all(affiliate_basis_points: 5_00)
+        affiliate_with_inactive_products.product_affiliates.find_by!(link_id: active_product.id).update!(affiliate_basis_points: 35_00)
+      end
+
+      {
+        "deleted" => :deleted_at,
+        "purchase-disabled" => :purchase_disabled_at,
+        "banned" => :banned_at,
+      }.each do |state, attribute|
+        context "when products are #{state}" do
+          before do
+            inactive_product_1.update!(attribute => Time.current)
+            inactive_product_2.update!(attribute => Time.current)
+          end
+
+          it "sorts by the number of live affiliated products" do
+            affiliates = seller.direct_affiliates.where(id: [affiliate_user_3.id, affiliate_with_inactive_products.id])
+
+            expect(affiliates.sorted_by(key: "products", direction: "asc")).to eq([affiliate_with_inactive_products, affiliate_user_3])
+          end
+
+          it "sorts by the live product commission" do
+            affiliates = seller.direct_affiliates.where(id: [affiliate_user_1.id, affiliate_with_inactive_products.id])
+
+            expect(affiliates.sorted_by(key: "fee_percent", direction: "asc")).to eq([affiliate_user_1, affiliate_with_inactive_products])
+          end
+        end
+      end
+
+      it "uses the base commission when no affiliated products are live" do
+        inactive_product_1.update!(deleted_at: Time.current)
+        inactive_product_2.update!(deleted_at: Time.current)
+        active_product.update!(deleted_at: Time.current)
+        affiliates = seller.direct_affiliates.where(id: [affiliate_user_1.id, affiliate_with_inactive_products.id])
+
+        expect(affiliates.sorted_by(key: "fee_percent", direction: "asc")).to eq([affiliate_user_1, affiliate_with_inactive_products])
+      end
     end
 
     it "returns affiliates sorted by total sales" do

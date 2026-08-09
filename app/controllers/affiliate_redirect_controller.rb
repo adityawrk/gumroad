@@ -17,7 +17,7 @@ class AffiliateRedirectController < ApplicationController
 
   private
     def redirect_url(affiliate)
-      product = Link.find_by(unique_permalink: params[:unique_permalink]) if params[:unique_permalink].present?
+      product = Link.alive.find_by(unique_permalink: params[:unique_permalink]) if params[:unique_permalink].present?
       final_destination_url = affiliate.final_destination_url(product:)
       uri = Addressable::URI.parse(final_destination_url.strip)
 
