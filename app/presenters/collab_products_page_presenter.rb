@@ -5,6 +5,7 @@ class CollabProductsPagePresenter
   include Rails.application.routes.url_helpers
 
   PER_PAGE = 50
+  METRIC_SORT_KEYS = %w[successful_sales_count revenue].freeze
 
   attr_reader :products_sort, :memberships_sort
 
@@ -73,14 +74,32 @@ class CollabProductsPagePresenter
     def paginated_collabs(for_memberships:)
       page = for_memberships ? memberships_page : products_page
       sort = for_memberships ? memberships_sort : products_sort
+      collection = fetch_collabs(only: for_memberships ? "memberships" : "products")
+      if METRIC_SORT_KEYS.include?(sort&.dig(:key))
+        return metric_sorted_and_paginated_collabs(collection:, sort:, page:)
+      end
+
       sort_and_paginate_products(
         key: sort&.dig(:key),
         direction: sort&.dig(:direction),
         page:,
-        collection: fetch_collabs(only: for_memberships ? "memberships" : "products"),
+        collection:,
         per_page: PER_PAGE,
         user_id: seller.id
       )
+    end
+
+    def metric_sorted_and_paginated_collabs(collection:, sort:, page:)
+      page = 1 if page.to_i <= 0
+      products = collection.to_a
+      values = CollabProductMetricsService.new(products:, seller:).values_for(sort[:key])
+      direction_multiplier = sort[:direction] == "desc" ? -1 : 1
+      products.sort_by! do |product|
+        [direction_multiplier * values.fetch(product.id, 0), -product.created_at.to_i, -product.id]
+      end
+      pagination, paginated_products = pagy_array(products, limit: PER_PAGE, page:, overflow: :last_page)
+
+      [PagyPresenter.new(pagination).props, paginated_products]
     end
 
     def build_stats
