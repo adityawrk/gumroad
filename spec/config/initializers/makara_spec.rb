@@ -39,7 +39,15 @@ describe ActiveRecord::ConnectionAdapters::MakaraMysql2Adapter do
     end
 
     it "does not replay rows when fetching from an open stream fails" do
-      allow(adapter).to receive(:appropriate_connection).and_yield(connection)
+      selection_attempts = 0
+      allow(adapter).to receive(:appropriate_connection) do |_, _, &setup|
+        selection_attempts += 1
+        setup.call(connection)
+      rescue Mysql2::Error
+        retry if selection_attempts < 2
+
+        Kernel.raise
+      end
       allow(result).to receive(:each) do |&block|
         block.call(["first@example.com", Time.utc(2025, 1, 1)])
         raise Mysql2::Error, "Lost connection while reading result"
@@ -53,6 +61,7 @@ describe ActiveRecord::ConnectionAdapters::MakaraMysql2Adapter do
       end.to raise_error(Mysql2::Error, "Lost connection while reading result")
 
       expect(rows.map(&:first)).to eq(["first@example.com"])
+      expect(selection_attempts).to eq(1)
       expect(client).to have_received(:query).once
       expect(result).to have_received(:free).once
       expect(connection).to have_received(:_makara_blacklist!).once
