@@ -592,12 +592,23 @@ class Payment < ApplicationRecord
         # like 3 split parts of $3k each or similar.
         if was_created_in_split_mode?
           split_payments_info.each_with_index do |split_payment_info, index|
-            new_payment_state =
-              PaypalPayoutProcessor.get_latest_payment_state_from_paypal(split_payment_info["amount_cents"],
-                                                                         split_payment_info["txn_id"],
-                                                                         created_at.beginning_of_day - 1.day,
-                                                                         split_payment_info["state"])
-            split_payments_info[index]["state"] = new_payment_state
+            details = PaypalPayoutProcessor.get_latest_payment_details_from_paypal(
+              split_payment_info["amount_cents"],
+              split_payment_info["txn_id"],
+              created_at.beginning_of_day - 1.day,
+              split_payment_info["state"]
+            )
+            previous_state = split_payment_info["state"]
+            split_payments_info[index]["state"] = details[:state]
+            if details[:processor_fee_cents]
+              PaypalPayoutProcessor.record_split_payment_processor_fee(
+                self,
+                split_payments_info[index],
+                details[:processor_fee_cents],
+                previous_state:,
+                legacy_accounted_fee_cents: details[:legacy_accounted_fee_cents]
+              )
+            end
           end
           save!
 
