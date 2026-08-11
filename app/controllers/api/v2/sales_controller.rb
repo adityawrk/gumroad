@@ -79,7 +79,7 @@ class Api::V2::SalesController < Api::V2::BaseController
       rescue ArgumentError
         return error_400("Invalid page_key.")
       end
-      where_page_data = ["created_at <= ? and id < ?", last_purchase_created_at, last_purchase_id]
+      where_page_data = ["created_at < ? OR (created_at = ? AND id < ?)", last_purchase_created_at, last_purchase_created_at, last_purchase_id]
     end
 
     # Guard the main (page_key) pagination path with a query timeout, mirroring the
