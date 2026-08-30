@@ -247,6 +247,17 @@ describe Api::V2::ResourceSubscriptionsController do
       expect(ResourceSubscription.last.deleted_at).to be(nil)
     end
 
+    it "does not allow another resource owner to delete the subscription through the same app" do
+      resource_subscription = create(:resource_subscription, user: @user, oauth_application: @app, resource_name: "sale")
+      another_user = create(:user)
+      another_token = create("doorkeeper/access_token", application: @app, resource_owner_id: another_user.id, scopes: "view_sales")
+
+      delete :destroy, params: { access_token: another_token.token, id: resource_subscription.external_id }
+
+      expect(response.parsed_body["success"]).to be(false)
+      expect(resource_subscription.reload.deleted_at).to be(nil)
+    end
+
     it "marks the subscription as deleted" do
       resource_subscription = create(:resource_subscription, user: @user, oauth_application: @app, resource_name: "sale")
       delete :destroy, params: { access_token: @token.token, id: resource_subscription.external_id }
