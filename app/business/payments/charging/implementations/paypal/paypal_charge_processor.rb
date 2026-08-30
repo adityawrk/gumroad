@@ -139,7 +139,7 @@ class PaypalChargeProcessor
     purchase = Purchase.successful.find_by(stripe_transaction_id: event_info["resource"]["id"])
     return unless purchase
 
-    fee_cents = paypal_fee_cents(paypal_fee["value"], paypal_fee["currency_code"])
+    fee_cents = paypal_amount_cents(paypal_fee["value"], paypal_fee["currency_code"])
     unless fee_cents
       ErrorNotifier.notify(
         "PayPal capture completed webhook: fee has unsupported precision; skipping fee update",
@@ -157,13 +157,15 @@ class PaypalChargeProcessor
   end
   private_class_method :handle_payment_capture_completed_event
 
-  def self.paypal_fee_cents(value, currency)
-    scaled_fee = BigDecimal(value) * unit_scaling_factor(currency)
-    scaled_fee.to_i if scaled_fee.finite? && scaled_fee == scaled_fee.to_i
+  def self.paypal_amount_cents(value, currency)
+    return if value.blank? || currency.blank?
+
+    scaled_amount = BigDecimal(value) * unit_scaling_factor(currency)
+    scaled_amount.to_i if scaled_amount.finite? && scaled_amount == scaled_amount.to_i
   rescue ArgumentError, TypeError, FloatDomainError
     nil
   end
-  private_class_method :paypal_fee_cents
+  private_class_method :paypal_amount_cents
 
   def self.handle_payment_capture_denied_event(event_info)
     refund_purchase(capture_id: event_info["resource"]["id"])
@@ -240,7 +242,21 @@ class PaypalChargeProcessor
 
     refunded_amount = event_info["resource"]["seller_payable_breakdown"]["total_refunded_amount"]["value"]
     refund_currency = event_info["resource"]["seller_payable_breakdown"]["total_refunded_amount"]["currency_code"]
-    usd_amount_cents = get_usd_cents(refund_currency.downcase, (refunded_amount.to_f * unit_scaling_factor(refund_currency)).to_i)
+    refund_amount_cents = paypal_amount_cents(refunded_amount, refund_currency)
+    unless refund_currency.is_a?(String) && refund_currency.present? && refund_amount_cents&.positive?
+      ErrorNotifier.notify(
+        "PayPal refund webhook: cumulative refund amount is invalid; skipping automatic refund",
+        capture_id:,
+        processor_refund_id: refund_id,
+        refund_currency:,
+        refund_value: refunded_amount,
+        webhook_event_id: event_info["id"],
+        webhook_event_type: event_info["event_type"]
+      )
+      return
+    end
+
+    usd_amount_cents = get_usd_cents(refund_currency.downcase, refund_amount_cents)
 
     refund_purchase(capture_id:, usd_amount_cents:,
                     processor_refund: OpenStruct.new({ id: refund_id, status: event_info["resource"]["status"] }),
