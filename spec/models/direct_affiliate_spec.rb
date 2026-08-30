@@ -225,6 +225,18 @@ describe DirectAffiliate do
         end
       end
 
+      context "when affiliated products have been deleted" do
+        it "uses the sole live affiliated product" do
+          deleted_product = create(:product, user: seller)
+          live_product = create(:product, user: seller)
+          affiliate.products << [deleted_product, live_product]
+          deleted_product.update!(deleted_at: Time.current)
+
+          expect(affiliate.final_destination_url).to eq live_product.long_url
+          expect(affiliate.final_destination_url(product: deleted_product)).to eq live_product.long_url
+        end
+      end
+
       context "when seller username is set" do
         before do
           seller.update!(username: "barnabas")
@@ -777,6 +789,21 @@ describe DirectAffiliate do
             ],
             product_referral_url: affiliate.referral_url,
           }
+        )
+      end
+    end
+
+    context "when the sole affiliated product has been deleted" do
+      before do
+        create(:product, name: "Live but unaffiliated", user: affiliate.seller)
+        product.update!(deleted_at: Time.current)
+      end
+
+      it "returns the general referral URL and no enabled products" do
+        expect(affiliate.as_json).to include(
+          products: [],
+          apply_to_all_products: false,
+          product_referral_url: affiliate.referral_url,
         )
       end
     end

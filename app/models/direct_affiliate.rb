@@ -33,7 +33,9 @@ class DirectAffiliate < Affiliate
   end
 
   def final_destination_url(product: nil)
-    product = products.last if !apply_to_all_products && product_affiliates.one?
+    live_products = products.merge(Link.alive)
+    product = live_products.last if !apply_to_all_products && live_products.one?
+    product = nil unless product&.alive?
     product_affiliate = product_affiliates.find_by(link_id: product.id) if product.present?
     product_destination_url = product_affiliate&.destination_url
 
@@ -44,7 +46,7 @@ class DirectAffiliate < Affiliate
     elsif product_affiliate.present?
       product.long_url
     else
-      seller.subdomain_with_protocol || products.last&.long_url
+      seller.subdomain_with_protocol
     end
   end
 
@@ -54,7 +56,7 @@ class DirectAffiliate < Affiliate
     affiliate_info.merge(
       products: affiliated_products,
       apply_to_all_products: affiliated_products.all? { _1[:fee_percent] == affiliate_percentage } && affiliated_products.length == seller.links.alive.count,
-      product_referral_url: product_affiliates.one? ? referral_url_for_product(products.first) : referral_url)
+      product_referral_url: affiliated_products.one? ? affiliated_products.first[:referral_url] : referral_url)
   end
 
   def product_sales_info

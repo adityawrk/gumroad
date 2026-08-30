@@ -102,5 +102,17 @@ describe AffiliateRedirectController do
         expect(response).to redirect_to creator.subdomain_with_protocol
       end
     end
+
+    context "when the product in the referral URL has been deleted" do
+      let(:creator) { create(:named_user) }
+
+      it "redirects to the creator's profile" do
+        product.update!(deleted_at: Time.current)
+
+        get :set_cookie_and_redirect, params: { affiliate_id: direct_affiliate.external_id_numeric, unique_permalink: product.unique_permalink }
+
+        expect(response).to redirect_to creator.subdomain_with_protocol
+      end
+    end
   end
 end
