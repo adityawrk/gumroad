@@ -518,7 +518,7 @@ class PaypalPayoutProcessor
       # rejection from a retryable one, so a doomed split payout would be re-attempted every week
       # forever (gumroad-private#1478).
       split_payment_info["reason_code"] = paypal_event["reason_code"] if paypal_event["reason_code"].present?
-      payment.processor_fee_cents += 100 * paypal_event["mc_fee"].to_f if paypal_event["mc_fee"]
+      payment.processor_fee_cents += (paypal_event["mc_fee"].to_d * 100).to_i if paypal_event["mc_fee"]
       payment.save!
 
       # PayPal is sending incorrect payment status ('Pending') in the IPN callback for some of the payments where the
