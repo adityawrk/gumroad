@@ -1197,6 +1197,103 @@ describe PaypalChargeProcessor, :vcr do
     end
   end
 
+  describe "PAYMENT.CAPTURE.REVERSED amount conversion" do
+    it "passes fractional reversal amounts to the refund handler in exact cents" do
+      refund_id = "PAYPAL-FRACTIONAL-REFUND"
+      capture_id = "PAYPAL-FRACTIONAL-REVERSAL"
+      event_info = {
+        "event_type" => PaypalEventType::PAYMENT_CAPTURE_REVERSED,
+        "resource" => {
+          "id" => refund_id,
+          "status" => "COMPLETED",
+          "seller_payable_breakdown" => {
+            "total_refunded_amount" => { "currency_code" => "USD", "value" => "1.15" }
+          },
+          "links" => [
+            { "href" => "https://api.paypal.com/v2/payments/captures/#{capture_id}" }
+          ]
+        }
+      }
+
+      allow(Refund).to receive(:where).with(processor_refund_id: refund_id).and_return(double(exists?: false))
+      expect(described_class).to receive(:get_usd_cents).with("usd", 115).and_return(115)
+      expect(described_class).to receive(:refund_purchase).with(
+        capture_id:,
+        usd_amount_cents: 115,
+        processor_refund: satisfy { |refund| refund.id == refund_id && refund.status == "COMPLETED" },
+        skip_if_capture_shared: true
+      )
+
+      described_class.handle_order_events(event_info)
+    end
+
+    it "skips a reversal with unsupported precision" do
+      refund_id = "PAYPAL-OVERPRECISE-REFUND"
+      capture_id = "PAYPAL-OVERPRECISE-REVERSAL"
+      event_info = {
+        "id" => "PAYPAL-OVERPRECISE-WEBHOOK",
+        "event_type" => PaypalEventType::PAYMENT_CAPTURE_REVERSED,
+        "resource" => {
+          "id" => refund_id,
+          "status" => "COMPLETED",
+          "seller_payable_breakdown" => {
+            "total_refunded_amount" => { "currency_code" => "USD", "value" => "1.151" }
+          },
+          "links" => [
+            { "href" => "https://api.paypal.com/v2/payments/captures/#{capture_id}" }
+          ]
+        }
+      }
+
+      allow(Refund).to receive(:where).with(processor_refund_id: refund_id).and_return(double(exists?: false))
+      expect(ErrorNotifier).to receive(:notify).with(
+        "PayPal refund webhook: cumulative refund amount is invalid; skipping automatic refund",
+        capture_id:,
+        processor_refund_id: refund_id,
+        refund_currency: "USD",
+        refund_value: "1.151",
+        webhook_event_id: "PAYPAL-OVERPRECISE-WEBHOOK",
+        webhook_event_type: PaypalEventType::PAYMENT_CAPTURE_REVERSED
+      )
+      expect(described_class).not_to receive(:refund_purchase)
+
+      described_class.handle_order_events(event_info)
+    end
+
+    it "skips a reversal without a currency" do
+      refund_id = "PAYPAL-MISSING-CURRENCY-REFUND"
+      capture_id = "PAYPAL-MISSING-CURRENCY-REVERSAL"
+      event_info = {
+        "id" => "PAYPAL-MISSING-CURRENCY-WEBHOOK",
+        "event_type" => PaypalEventType::PAYMENT_CAPTURE_REVERSED,
+        "resource" => {
+          "id" => refund_id,
+          "status" => "COMPLETED",
+          "seller_payable_breakdown" => {
+            "total_refunded_amount" => { "value" => "1.15" }
+          },
+          "links" => [
+            { "href" => "https://api.paypal.com/v2/payments/captures/#{capture_id}" }
+          ]
+        }
+      }
+
+      allow(Refund).to receive(:where).with(processor_refund_id: refund_id).and_return(double(exists?: false))
+      expect(ErrorNotifier).to receive(:notify).with(
+        "PayPal refund webhook: cumulative refund amount is invalid; skipping automatic refund",
+        capture_id:,
+        processor_refund_id: refund_id,
+        refund_currency: nil,
+        refund_value: "1.15",
+        webhook_event_id: "PAYPAL-MISSING-CURRENCY-WEBHOOK",
+        webhook_event_type: PaypalEventType::PAYMENT_CAPTURE_REVERSED
+      )
+      expect(described_class).not_to receive(:refund_purchase)
+
+      described_class.handle_order_events(event_info)
+    end
+  end
+
   describe "#get_chargeable_for_params" do
     context "when billing agreement id is passed in arguments" do
       let(:params) { { billing_agreement_id: "B-38D505255T217912K" } }
