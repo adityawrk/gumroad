@@ -367,13 +367,28 @@ describe Api::Mobile::SalesController, :vcr do
     context "with an unknown variant_id" do
       it "responds with a controlled 404 instead of crashing" do
         expect do
-          put :variant, params: @params.merge(id: @purchase.external_id, variant_id: "nonexistent")
+          put :variant, params: @params.merge(id: @purchase.external_id, variant_id: "nonexistent", quantity: 1)
         end.not_to raise_error
 
         expect(response).to have_http_status(:not_found)
         expect(response.parsed_body["success"]).to eq(false)
         expect(response.parsed_body["message"]).to eq("Variant not found")
       end
+    end
+
+    it "rejects a partially numeric quantity without changing the purchase",
+       vcr: { cassette_name: "Api_Mobile_SalesController/PUT_variant/with_an_unknown_variant_id/responds_with_a_controlled_404_instead_of_crashing" } do
+      category = create(:variant_category, link: @product, title: "Color")
+      blue_variant = create(:variant, variant_category: category, name: "Blue")
+      green_variant = create(:variant, variant_category: category, name: "Green")
+      @purchase.update!(variant_attributes: [blue_variant])
+
+      put :variant, params: @params.merge(id: @purchase.external_id, variant_id: green_variant.external_id, quantity: "2many")
+
+      expect(response).to have_http_status(:unprocessable_entity)
+      expect(response.parsed_body).to eq("success" => false, "message" => "Invalid quantity")
+      expect(@purchase.reload.variant_attributes).to eq [blue_variant]
+      expect(@purchase.quantity).to eq 1
     end
   end
 
