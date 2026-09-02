@@ -8,10 +8,6 @@ class SendPreorderSellerSummaryWorker
   WAIT_PERIOD = 20.minutes
 
   def perform(preorder_link_id, attempts = 0)
-    if attempts >= MAX_ATTEMPTS_TO_WAIT_FOR_ALL_CHARGED
-      notify_and_raise "Timed out waiting for all preorders to be charged. PreorderLink: #{preorder_link_id}."
-    end
-
     preorder_link = PreorderLink.find(preorder_link_id)
     preorders = preorder_link.preorders.authorization_successful
     are_all_preorders_charged = preorders.joins(:purchases).merge(Purchase.not_in_progress)
@@ -20,6 +16,8 @@ class SendPreorderSellerSummaryWorker
 
     if are_all_preorders_charged
       ContactingCreatorMailer.preorder_summary(preorder_link_id).deliver_later(queue: "critical")
+    elsif attempts >= MAX_ATTEMPTS_TO_WAIT_FOR_ALL_CHARGED
+      notify_and_raise "Timed out waiting for all preorders to be charged. PreorderLink: #{preorder_link_id}."
     else
       # We're not done charging the cards. Try again later.
       SendPreorderSellerSummaryWorker.perform_in(WAIT_PERIOD, preorder_link_id, attempts + 1)
