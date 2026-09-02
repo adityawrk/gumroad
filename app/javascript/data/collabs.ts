@@ -20,3 +20,5 @@ export type Membership = Product & {
   monthly_recurring_revenue: number;
   revenue_pending: number;
 };
+
+export type SortKey = "name" | "display_price_cents" | "cut" | "successful_sales_count" | "revenue";
