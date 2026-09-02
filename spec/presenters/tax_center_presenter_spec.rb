@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 describe TaxCenterPresenter do
-  let(:seller) { create(:user, created_at: Time.new(2020, 9, 21)) }
+  let(:seller) { create(:user, created_at: Time.new(2020, 9, 21), timezone: "UTC") }
   let(:presenter) { described_class.new(seller:, year: 2023) }
 
   before do
@@ -62,7 +62,7 @@ describe TaxCenterPresenter do
         purchase
       end
 
-      let!(:purchase_2024) { create(:purchase, link: product, created_at: Time.new(2024, 1, 1)) }
+      let!(:purchase_2024) { create(:purchase, link: product, created_at: Time.zone.local(2024, 1, 1)) }
 
       it "returns document with necessary data" do
         result = presenter.props
@@ -116,6 +116,35 @@ describe TaxCenterPresenter do
 
         expect(Rails.cache.exist?("tax_form_data_us_1099_k_2023_#{seller.id}")).to be(true)
       end
+    end
+  end
+
+  describe "#gross_cents" do
+    it "includes the final day of the year and excludes the next year" do
+      product = create(:product, user: seller)
+      create(
+        :purchase,
+        link: product,
+        created_at: Time.zone.local(2023, 12, 31, 12),
+        price_cents: 10_00,
+      )
+      create(
+        :purchase,
+        link: product,
+        created_at: Time.zone.local(2024, 1, 1),
+        price_cents: 20_00,
+      )
+
+      expect(presenter.gross_cents).to eq(10_00)
+    end
+
+    it "uses the seller's timezone at the year boundary" do
+      seller.update!(timezone: "Pacific Time (US & Canada)")
+      product = create(:product, user: seller)
+      create(:purchase, link: product, created_at: Time.utc(2024, 1, 1, 7, 30), price_cents: 10_00)
+      create(:purchase, link: product, created_at: Time.utc(2024, 1, 1, 8), price_cents: 20_00)
+
+      expect(presenter.gross_cents).to eq(10_00)
     end
   end
 end

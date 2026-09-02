@@ -9,7 +9,7 @@ describe Exports::TaxSummary::Payable, :vcr do
     let!(:year) { 2019 }
     before do
       date_in_year = Date.new(year)
-      @user = create(:user)
+      @user = create(:user, timezone: "UTC")
       @compliance_info = create(:user_compliance_info, user: @user)
       @merchant_account_stripe = create(:merchant_account_stripe, user: @user)
       create(:tos_agreement, user: @user)
