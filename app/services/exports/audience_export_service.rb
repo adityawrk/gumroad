@@ -27,9 +27,7 @@ class Exports::AudienceExportService
 
       query = query.where(conditions.join(" OR "))
 
-      query.order(:min_created_at).find_each do |member|
-        csv << [member.email, member.min_created_at]
-      end
+      write_rows_in_subscribed_order(csv, query)
     end
 
     @tempfile.rewind
@@ -38,6 +36,22 @@ class Exports::AudienceExportService
   end
 
   private
+    def write_rows_in_subscribed_order(csv, query)
+      ordered_query = query.reorder(:min_created_at, :id).reselect(:email, :min_created_at)
+
+      # Open through Makara, then consume outside its retry scope so failover cannot replay rows.
+      # One statement also keeps membership and ordering stable without loading every row in memory.
+      AudienceMember.connection.with_streaming_result(
+        ordered_query.to_sql,
+        "Audience Export",
+        stream: true,
+        cache_rows: false,
+        as: :array,
+      ) do |result|
+        result.each { csv << _1 }
+      end
+    end
+
     def validate_options!
       unless @options[:followers] || @options[:customers] || @options[:affiliates]
         raise ArgumentError, "At least one audience type (followers, customers, or affiliates) must be selected"
