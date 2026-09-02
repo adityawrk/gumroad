@@ -44,11 +44,11 @@ export const GetPayouts = () => (
     <ApiParameters>
       <ApiParameter
         name="after"
-        description="(optional, date in form YYYY-MM-DD) - Only return payouts after this date"
+        description="(optional, date in form YYYY-MM-DD) - Only return payouts created on or after 00:00 UTC on this date"
       />
       <ApiParameter
         name="before"
-        description="(optional, date in form YYYY-MM-DD) - Only return payouts before this date"
+        description="(optional, date in form YYYY-MM-DD) - Only return payouts created before 00:00 UTC on this date"
       />
       <ApiParameter
         name="page_key"

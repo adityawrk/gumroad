@@ -34,7 +34,9 @@ class Api::V2::PayoutsController < Api::V2::BaseController
     paginated_payouts = paginated_payouts.limit(RESULTS_PER_PAGE + 1).to_a
 
     if params[:page_key].blank? && params[:include_upcoming] != "false"
-      current_resource_owner.upcoming_payouts.filter { end_date.nil? || end_date >= _1.created_at }.each do |payout|
+      current_resource_owner.upcoming_payouts.filter do |payout|
+        (start_date.nil? || start_date <= payout.created_at) && (end_date.nil? || end_date > payout.created_at)
+      end.each do |payout|
         paginated_payouts.unshift(
           payout.as_json.merge(id: nil)
         )
