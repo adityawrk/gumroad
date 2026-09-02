@@ -436,20 +436,29 @@ module Purchase::Searchable
 
   module ProductCallbacks
     extend ActiveSupport::Concern
+    include TransactionalAttributeChangeTracker
+
+    PURCHASE_SEARCH_FIELDS = {
+      "name" => "product_name",
+      "description" => "product_description",
+      "taxonomy_id" => "taxonomy_id",
+    }.freeze
 
     included do
-      after_commit :update_sales_taxonomy_id, on: :update
+      after_commit :update_sales_search_fields, on: :update
     end
 
-    def update_sales_taxonomy_id
-      return unless previous_changes.key?("taxonomy_id")
+    def update_sales_search_fields
+      fields = PURCHASE_SEARCH_FIELDS.values_at(*attributes_committed).compact
+      return if fields.empty?
+
       first_sale_id = sales.pick(:id)
       return if first_sale_id.nil?
 
       query = PurchaseSearchService.new(product: self).query
       options = {
         "class_name" => Purchase.name,
-        "fields" => ["taxonomy_id"],
+        "fields" => fields,
         "source_record_id" => first_sale_id,
         "query" => query.deep_stringify_keys
       }
