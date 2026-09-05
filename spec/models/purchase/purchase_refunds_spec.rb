@@ -10,7 +10,7 @@ describe "PurchaseRefunds", :vcr do
   it "removes a product from recommendable search results when its last sale is fully refunded", :elasticsearch_wait_for_refresh do
     seller = create(:compliant_user, name: "Refunded sale seller")
     product = create(:product, user: seller, taxonomy: create(:taxonomy))
-    create(:merchant_account, user: nil)
+    create(:merchant_account, user: nil, charge_processor_merchant_id: "acct_refund_search_#{SecureRandom.hex(8)}")
     purchase = create(:purchase, link: product, seller:)
     index_model_records(Link)
 
@@ -31,7 +31,9 @@ describe "PurchaseRefunds", :vcr do
   end
 
   describe "product recommendation refresh after refund status changes" do
-    before { create(:merchant_account, user: nil) }
+    before do
+      create(:merchant_account, user: nil, charge_processor_merchant_id: "acct_refund_callback_#{SecureRandom.hex(8)}")
+    end
 
     let!(:purchase) { create(:purchase) }
     let(:job_args) { [purchase.link_id, "update", %w[is_recommendable]] }

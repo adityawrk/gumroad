@@ -5,7 +5,9 @@ require "spec_helper"
 describe Purchase::HandleFailedRefundService do
   let(:seller) { create(:user) }
   let(:product) { create(:product, user: seller, price_cents: 2000) }
-  let(:merchant_account) { create(:merchant_account, user: nil) }
+  let(:merchant_account) do
+    create(:merchant_account, user: nil, charge_processor_merchant_id: "acct_failed_refund_#{SecureRandom.hex(8)}")
+  end
 
   let(:purchase) do
     create(:purchase_with_balance,
@@ -385,7 +387,11 @@ describe Purchase::HandleFailedRefundService do
         # Stripe custom account: charged_using_gumroad_merchant_account? is true, but
         # the refund also debited the connected account outside our ledger, so an
         # automatic offset here would claim money the external account no longer has.
-        stripe_held_account = create(:merchant_account, user: seller)
+        stripe_held_account = create(
+          :merchant_account,
+          user: seller,
+          charge_processor_merchant_id: "acct_stripe_held_#{SecureRandom.hex(8)}"
+        )
         expect(stripe_held_account.holder_of_funds).to eq(HolderOfFunds::STRIPE)
         purchase.update!(merchant_account: stripe_held_account)
 
@@ -843,7 +849,9 @@ describe Purchase::HandleFailedRefundService do
     let(:product) { create(:product, price_cents: 10_00) }
     let(:seller) { product.user }
     let(:affiliate) { create(:direct_affiliate, affiliate_user:, seller:, affiliate_basis_points: 1000, products: [product]) }
-    let(:real_path_merchant_account) { create(:merchant_account, user: nil) }
+    let(:real_path_merchant_account) do
+      create(:merchant_account, user: nil, charge_processor_merchant_id: "acct_real_refund_#{SecureRandom.hex(8)}")
+    end
     let(:purchase) do
       create(
         :purchase_in_progress,
