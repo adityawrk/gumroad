@@ -24,7 +24,7 @@ class Exports::Payouts::Base
     end
 
   private
-    def payout_data
+    def payout_data(processor_activity_range: nil, include_processor_activity: true)
       payout = @payment
       @running_total = 0
       @paypal_rows = []
@@ -119,8 +119,13 @@ class Exports::Payouts::Base
         end
       end
 
-      data = merge_paypal_sales_data(data)
-      data = merge_stripe_connect_sales_data(data)
+      if include_processor_activity
+        processor_start_date, processor_end_date = processor_activity_dates(payout, processor_activity_range)
+        if processor_start_date <= processor_end_date
+          data = merge_paypal_sales_data(data, start_date: processor_start_date, end_date: processor_end_date)
+          data = merge_stripe_connect_sales_data(data, start_date: processor_start_date, end_date: processor_end_date)
+        end
+      end
 
       if payout.gumroad_fee_cents.present?
         data << [
@@ -173,33 +178,42 @@ class Exports::Payouts::Base
       data
     end
 
-    def merge_paypal_sales_data(data)
-      payout = @payment
-      user = payout.user
+    def processor_activity_dates(payout, activity_range)
       previous_payout = payout.user.payments.completed.where("created_at < ?", payout.created_at).order(:payout_period_end_date).last
-      payout_start_date = previous_payout&.payout_period_end_date.try(:next)
-      payout_start_date ||= PayoutsHelper::OLDEST_DISPLAYABLE_PAYOUT_PERIOD_END_DATE.to_date
-      payout_end_date = payout.payout_period_end_date || Date.today.to_date
+      start_date = previous_payout&.payout_period_end_date.try(:next)
+      start_date ||= PayoutsHelper::OLDEST_DISPLAYABLE_PAYOUT_PERIOD_END_DATE.to_date
+      end_date = payout.payout_period_end_date || Date.today.to_date
 
-      user.paypal_sales_in_duration(start_date: payout_start_date, end_date: payout_end_date).joins(:link).find_each do |purchase|
+      if activity_range
+        start_date = [start_date, activity_range.begin].max
+        end_date = [end_date, activity_range.end].min
+      end
+
+      [start_date, end_date]
+    end
+
+    def merge_paypal_sales_data(data, start_date:, end_date:)
+      user = @payment.user
+
+      user.paypal_sales_in_duration(start_date:, end_date:).joins(:link).find_each do |purchase|
         row = summarize_sale(purchase)
         paypal_rows << row
         data << row
       end
 
-      user.paypal_sales_chargebacked_in_duration(start_date: payout_start_date, end_date: payout_end_date).joins(:link).find_each do |purchase|
+      user.paypal_sales_chargebacked_in_duration(start_date:, end_date:).joins(:link).find_each do |purchase|
         row = summarize_chargeback(purchase)
         paypal_rows << row
         data << row
       end
 
-      user.paypal_refunds_in_duration(start_date: payout_start_date, end_date: payout_end_date).find_each do |refund|
+      user.paypal_refunds_in_duration(start_date:, end_date:).find_each do |refund|
         row = summarize_paypal_refund(refund)
         paypal_rows << row
         data << row
       end
 
-      paypal_affiliate_fee_dates(user, payout_start_date, payout_end_date).each do |date|
+      paypal_affiliate_fee_dates(user, start_date, end_date).each do |date|
         affiliate_fees_entry = summarize_paypal_affiliate_fee(user, date)
         if affiliate_fees_entry.last != 0
           paypal_rows << affiliate_fees_entry
@@ -207,11 +221,11 @@ class Exports::Payouts::Base
         end
       end
 
-      paypal_sales_data = user.paypal_sales_data_for_duration(start_date: payout_start_date, end_date: payout_end_date)
+      paypal_sales_data = user.paypal_sales_data_for_duration(start_date:, end_date:)
       paypal_payout_amount = user.paypal_payout_net_cents(paypal_sales_data)
 
       if paypal_payout_amount != 0
-        row = summarize_paypal_payout(paypal_payout_amount, payout_end_date)
+        row = summarize_paypal_payout(paypal_payout_amount, end_date)
         paypal_rows << row
         data << row
       end
@@ -219,33 +233,28 @@ class Exports::Payouts::Base
       data
     end
 
-    def merge_stripe_connect_sales_data(data)
-      payout = @payment
-      user = payout.user
-      previous_payout = payout.user.payments.completed.where("created_at < ?", payout.created_at).order(:payout_period_end_date).last
-      payout_start_date = previous_payout&.payout_period_end_date.try(:next)
-      payout_start_date ||= PayoutsHelper::OLDEST_DISPLAYABLE_PAYOUT_PERIOD_END_DATE.to_date
-      payout_end_date = payout.payout_period_end_date || Date.today.to_date
+    def merge_stripe_connect_sales_data(data, start_date:, end_date:)
+      user = @payment.user
 
-      user.stripe_connect_sales_in_duration(start_date: payout_start_date, end_date: payout_end_date).joins(:link).find_each do |purchase|
+      user.stripe_connect_sales_in_duration(start_date:, end_date:).joins(:link).find_each do |purchase|
         row = summarize_sale(purchase)
         stripe_connect_rows << row
         data << row
       end
 
-      user.stripe_connect_sales_chargebacked_in_duration(start_date: payout_start_date, end_date: payout_end_date).joins(:link).find_each do |purchase|
+      user.stripe_connect_sales_chargebacked_in_duration(start_date:, end_date:).joins(:link).find_each do |purchase|
         row = summarize_chargeback(purchase)
         stripe_connect_rows << row
         data << row
       end
 
-      user.stripe_connect_refunds_in_duration(start_date: payout_start_date, end_date: payout_end_date).find_each do |refund|
+      user.stripe_connect_refunds_in_duration(start_date:, end_date:).find_each do |refund|
         row = summarize_stripe_connect_refund(refund)
         stripe_connect_rows << row
         data << row
       end
 
-      stripe_connect_affiliate_fee_dates(user, payout_start_date, payout_end_date).each do |date|
+      stripe_connect_affiliate_fee_dates(user, start_date, end_date).each do |date|
         affiliate_fees_entry = summarize_stripe_connect_affiliate_fee(user, date)
         if affiliate_fees_entry.last != 0
           stripe_connect_rows << affiliate_fees_entry
@@ -253,11 +262,11 @@ class Exports::Payouts::Base
         end
       end
 
-      stripe_connect_sales_data = user.stripe_connect_sales_data_for_duration(start_date: payout_start_date, end_date: payout_end_date)
+      stripe_connect_sales_data = user.stripe_connect_sales_data_for_duration(start_date:, end_date:)
       stripe_connect_payout_amount = user.stripe_connect_payout_net_cents(stripe_connect_sales_data)
 
       if stripe_connect_payout_amount != 0
-        row = summarize_stripe_connect_payout(stripe_connect_payout_amount, payout_end_date)
+        row = summarize_stripe_connect_payout(stripe_connect_payout_amount, end_date)
         stripe_connect_rows << row
         data << row
       end
