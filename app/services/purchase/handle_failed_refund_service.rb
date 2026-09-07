@@ -164,10 +164,22 @@ class Purchase::HandleFailedRefundService
       purchase.enqueue_update_sales_related_products_infos_job
     end
 
+    # Reconcile from persisted state on every delivery because the reversal can
+    # commit before the first enqueue, leaving a retry responsible for repairing it.
+    schedule_restored_call_calendar_invites if refund.balance_reversed_on_failure.present?
+
     handled || queue_created
   end
 
   private
+    def schedule_restored_call_calendar_invites
+      gift_receiver_purchase_id = purchase.gift_given&.giftee_purchase_id
+      purchase_ids = gift_receiver_purchase_id ? [gift_receiver_purchase_id] : [purchase.id]
+      purchase_ids.concat(purchase.product_purchases.ids) if purchase.is_bundle_purchase?
+
+      Call.where(purchase_id: purchase_ids.compact).find_each(&:send_google_calendar_invites)
+    end
+
     # Only reverse automatically when every effect of the refund lives in Gumroad's
     # own balance ledger: a Gumroad-controlled merchant account whose funds Gumroad
     # holds, and no active dispute. Refunds involving Stripe Connect, Gumroad-managed

@@ -314,8 +314,11 @@ describe Call do
   end
 
   describe "google calendar integration" do
+    before { create(:merchant_account, user: nil, charge_processor_merchant_id: "call_model_#{SecureRandom.hex(12)}") }
+
     let(:integration) { create(:google_calendar_integration) }
-    let(:call) { create(:call, link: create(:call_product, :available_for_a_year, active_integrations: [integration])) }
+    let(:integrated_product) { create(:call_product, :available_for_a_year, active_integrations: [integration]) }
+    let(:call) { create(:call, link: integrated_product) }
     let(:call2) { create(:call, link: create(:call_product, :available_for_a_year)) }
 
     it "schedules google calendar invites" do
@@ -324,6 +327,18 @@ describe Call do
       end.to change(GoogleCalendarInviteJob.jobs, :size).by(1)
 
       expect(GoogleCalendarInviteJob.jobs.last["args"]).to eq([call.id])
+    end
+
+    %i[mark_test_successful! mark_test_preorder_successful!].each do |transition|
+      it "schedules google calendar invites after #{transition.to_s.delete_suffix("!").delete_prefix("mark_").humanize.downcase}" do
+        purchase = create(:call_purchase, purchase_state: "in_progress", link: integrated_product)
+
+        expect do
+          purchase.public_send(transition)
+        end.to change(GoogleCalendarInviteJob.jobs, :size).by(1)
+
+        expect(GoogleCalendarInviteJob.jobs.last["args"]).to eq([purchase.call.id])
+      end
     end
 
     it "does not schedule google calendar invites if the call is not linked to a google calendar integration" do
