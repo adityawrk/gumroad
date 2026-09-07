@@ -42,6 +42,7 @@ class Purchase < ApplicationRecord
   NON_GIFT_SUCCESS_STATES = CHARGED_SUCCESS_STATES.dup.push("not_charged")
   ALL_SUCCESS_STATES = NON_GIFT_SUCCESS_STATES.dup.push("gift_receiver_purchase_successful")
   ALL_SUCCESS_STATES_INCLUDING_TEST = ALL_SUCCESS_STATES.dup.push("test_successful")
+  GOOGLE_CALENDAR_INVITE_SUCCESS_STATES = (ALL_SUCCESS_STATES_INCLUDING_TEST + %w[test_preorder_successful]).freeze
   ALL_SUCCESS_STATES_EXCEPT_PREORDER_AUTH = ALL_SUCCESS_STATES.dup - ["preorder_authorization_successful"]
   ALL_SUCCESS_STATES_EXCEPT_PREORDER_AUTH_AND_GIFT = ALL_SUCCESS_STATES_EXCEPT_PREORDER_AUTH.dup - ["gift_receiver_purchase_successful"]
   COUNTS_REVIEWS_STATES = %w[successful gift_receiver_purchase_successful not_charged]
@@ -287,6 +288,9 @@ class Purchase < ApplicationRecord
                                                                                                                                  }
     after_transition any => :successful, :do => :block_fraudulent_free_purchases!
     after_transition any => %i[successful not_charged gift_receiver_purchase_successful], :do => :schedule_order_review_reminder
+    after_transition any => GOOGLE_CALENDAR_INVITE_SUCCESS_STATES.map(&:to_sym), :do => :schedule_google_calendar_invite, if: lambda { |purchase|
+      purchase.link.native_type == Link::NATIVE_TYPE_CALL
+    }
     after_transition any => NON_GIFT_SUCCESS_STATES.map(&:to_sym), :do => :schedule_indian_card_mandate_registration_check
     after_transition any => any, :do => :log_transition
 
@@ -5979,6 +5983,10 @@ class Purchase < ApplicationRecord
           id,
           time_till_rental_expiration.to_i)
       end
+    end
+
+    def schedule_google_calendar_invite
+      after_commit { call&.send_google_calendar_invites }
     end
 
     def schedule_workflow_jobs

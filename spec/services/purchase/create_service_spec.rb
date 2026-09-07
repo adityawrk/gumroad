@@ -4122,7 +4122,10 @@ describe Purchase::CreateService, :vcr do
   end
 
   describe "call products", :freeze_time do
-    before { travel_to(DateTime.parse("May 1 2024 UTC")) }
+    before do
+      create(:merchant_account, user: nil, charge_processor_merchant_id: "gift_call_#{SecureRandom.hex(12)}")
+      travel_to(DateTime.parse("May 1 2024 UTC"))
+    end
 
     let!(:call_product) { create(:call_product, :available_for_a_year, price_cents: price) }
     let!(:call_duration) { 30.minutes }
@@ -4131,17 +4134,23 @@ describe Purchase::CreateService, :vcr do
     let!(:normalized_call_start_time) { DateTime.parse("May 1 2024 10:28:00 UTC") }
 
     it "create a call with the correct start and end time" do
+      call_product.active_integrations << create(:google_calendar_integration)
       params[:variants] = [call_option_30_minute.external_id]
       params[:call_start_time] = call_start_time.iso8601
 
-      purchase, error = Purchase::CreateService.new(product: call_product, params:).perform
+      purchase = error = nil
+      expect do
+        purchase, error = Purchase::CreateService.new(product: call_product, params:).perform
+      end.to change(GoogleCalendarInviteJob.jobs, :size).by(1)
 
       expect(error).to be_nil
       expect(purchase.call.start_time).to eq(normalized_call_start_time)
       expect(purchase.call.end_time).to eq(normalized_call_start_time + call_duration)
+      expect(GoogleCalendarInviteJob.jobs.last["args"]).to eq([purchase.call.id])
     end
 
     it "allows gifting a call" do
+      call_product.active_integrations << create(:google_calendar_integration)
       params[:is_gift] = true
       params[:gift] = {
         gifter_email: "gifter@gumroad.com",
@@ -4151,7 +4160,10 @@ describe Purchase::CreateService, :vcr do
       params[:variants] = [call_option_30_minute.external_id]
       params[:call_start_time] = call_start_time.iso8601
 
-      purchase, error = Purchase::CreateService.new(product: call_product, params:).perform
+      purchase = error = nil
+      expect do
+        purchase, error = Purchase::CreateService.new(product: call_product, params:).perform
+      end.to change(GoogleCalendarInviteJob.jobs, :size).by(1)
 
       expect(error).to be_nil
       expect(purchase.call.start_time).to eq(normalized_call_start_time)
@@ -4161,6 +4173,29 @@ describe Purchase::CreateService, :vcr do
       giftee_purchase = purchase.gift_given.giftee_purchase
       expect(giftee_purchase.call.start_time).to eq(normalized_call_start_time)
       expect(giftee_purchase.call.end_time).to eq(normalized_call_start_time + call_duration)
+      expect(GoogleCalendarInviteJob.jobs.last["args"]).to eq([giftee_purchase.call.id])
+    end
+
+    it "does not schedule a calendar invite when a gifted call charge fails",
+       vcr: { cassette_name: "Purchase_CreateService/when_purchase_is_a_gift/but_the_charge_is_declined/creates_failed_purchases_and_returns_an_error_message" } do
+      call_product.active_integrations << create(:google_calendar_integration)
+      params[:purchase][:chargeable] = failed_chargeable
+      params[:is_gift] = true
+      params[:gift] = {
+        gifter_email: "gifter@gumroad.com",
+        giftee_email: "giftee@gumroad.com",
+        gift_note: "Hope you like it!"
+      }
+      params[:variants] = [call_option_30_minute.external_id]
+      params[:call_start_time] = call_start_time.iso8601
+
+      expect do
+        purchase, error = Purchase::CreateService.new(product: call_product, params:).perform
+
+        expect(error).to eq("Your card was declined.")
+        expect(purchase).to be_failed
+        expect(purchase.gift_given.giftee_purchase).to be_gift_receiver_purchase_failed
+      end.not_to change(GoogleCalendarInviteJob.jobs, :size)
     end
 
     context "missing variant selection" do
