@@ -5488,6 +5488,13 @@ class Purchase < ApplicationRecord
       return reject_existing_customer_offer_code if @offer_code_invalid_for_buyer
       # accept the offer code that was used when the buyer preordered/subscribed
       return if is_preorder_charge? || is_recurring_subscription_charge || is_gift_receiver_purchase || (is_installment_payment && !is_original_subscription_purchase)
+
+      if link.is_tiered_membership? && !is_gift_sender_purchase? && displayed_price_cents.zero? && purchase_offer_code_discount&.duration_in_billing_cycles.present?
+        self.error_code = PurchaseErrorCode::OFFER_CODE_INVALID
+        errors.add :base, "This discount code cannot make a membership temporarily free. Please remove it to continue."
+        return
+      end
+
       return if discount_code.blank?
 
       if offer_code.nil?
