@@ -23,6 +23,7 @@ class ScheduleMembershipPriceUpdatesJob
       next if selected_tier.id != tier_id
 
       selected_recurrence = plan_change.present? ? plan_change.recurrence : subscription.recurrence
+      selected_quantity = plan_change.present? ? plan_change.quantity : original_purchase.quantity
 
       existing_price = plan_change.present? ? plan_change.perceived_price_cents : original_purchase.displayed_price_cents
       new_price = nil
@@ -69,6 +70,7 @@ class ScheduleMembershipPriceUpdatesJob
       Rails.logger.info("Adding a plan change for membership price change - subscription_id: #{subscription.id}, tier_id: #{tier_id}, effective_on: #{effective_on}")
       new_plan_change = subscription.subscription_plan_changes.create!(tier: selected_tier,
                                                                        recurrence: selected_recurrence,
+                                                                       quantity: selected_quantity,
                                                                        perceived_price_cents: new_price,
                                                                        for_product_price_change: true,
                                                                        effective_on:)

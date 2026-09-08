@@ -55,6 +55,69 @@ describe ScheduleMembershipPriceUpdatesJob do
       end
 
       context "for a tier with apply_price_changes_to_existing_memberships enabled" do
+        it "preserves the membership quantity when scheduling a seller price change" do
+          product.update!(is_multiseat_license: true)
+          subscription = create(:membership_purchase, link: product, variant_attributes: [enabled_tier],
+                                                      quantity: 3, price_cents: original_price * 3).subscription
+
+          described_class.new.perform(enabled_tier.id)
+
+          plan_change = subscription.subscription_plan_changes.for_product_price_change.alive.sole
+          expect(plan_change.perceived_price_cents).to eq(new_price * 3)
+          expect(plan_change.quantity).to eq(3)
+        end
+
+        it "preserves seats when applying the scheduled price to the renewal template" do
+          product.update!(is_multiseat_license: true)
+          subscription = create(:membership_purchase, link: product, variant_attributes: [enabled_tier],
+                                                      quantity: 3, price_cents: original_price * 3).subscription
+          described_class.new.perform(enabled_tier.id)
+          plan_change = subscription.subscription_plan_changes.for_product_price_change.alive.sole
+
+          subscription.update_current_plan!(
+            new_variants: [plan_change.tier],
+            new_price: product.prices.alive.find_by!(recurrence: plan_change.recurrence),
+            new_quantity: plan_change.quantity,
+            perceived_price_cents: plan_change.perceived_price_cents,
+            is_applying_plan_change: true,
+            skip_preparing_for_charge: true
+          )
+
+          expect(subscription.reload.original_purchase.displayed_price_cents).to eq(new_price * 3)
+          expect(subscription.original_purchase.quantity).to eq(3)
+          renewal_purchase = subscription.build_purchase
+          expect(renewal_purchase.quantity).to eq(3)
+          expect(renewal_purchase.perceived_price_cents).to eq(new_price * 3)
+        end
+
+        it "preserves the buyer's pending quantity change when scheduling a seller price change" do
+          product.update!(is_multiseat_license: true)
+          subscription = create(:membership_purchase, link: product, variant_attributes: [enabled_tier],
+                                                      quantity: 3, price_cents: original_price * 3).subscription
+          create(:subscription_plan_change, subscription:, tier: enabled_tier, quantity: 2,
+                                            perceived_price_cents: original_price * 2)
+
+          described_class.new.perform(enabled_tier.id)
+
+          plan_change = subscription.subscription_plan_changes.for_product_price_change.alive.sole
+          expect(plan_change.perceived_price_cents).to eq(new_price * 2)
+          expect(plan_change.quantity).to eq(2)
+          expect(subscription.reload.original_purchase.quantity).to eq(3)
+        end
+
+        it "keeps the seat count and one active seller change when scheduling is retried" do
+          product.update!(is_multiseat_license: true)
+          subscription = create(:membership_purchase, link: product, variant_attributes: [enabled_tier],
+                                                      quantity: 3, price_cents: original_price * 3).subscription
+
+          2.times { described_class.new.perform(enabled_tier.id) }
+
+          plan_change = subscription.subscription_plan_changes.for_product_price_change.alive.sole
+          expect(plan_change.quantity).to eq(3)
+          expect(plan_change.perceived_price_cents).to eq(new_price * 3)
+          expect(subscription.reload.original_purchase.quantity).to eq(3)
+        end
+
         it "records a plan change for each live or pending cancellation subscription on the next charge after the effective date" do
           effective_on_next_billing_period = create(:membership_purchase, link: product, variant_attributes: [enabled_tier], succeeded_at: 2.weeks.ago).subscription
           effective_in_two_billing_periods = create(:membership_purchase, link: product, variant_attributes: [enabled_tier], succeeded_at: 25.days.ago).subscription
