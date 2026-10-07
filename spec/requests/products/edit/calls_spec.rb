@@ -166,4 +166,18 @@ describe "Calls Edit", type: :system, js: true do
     expect(call_limitation_info.minimum_notice_in_minutes).to eq(1440)
     expect(call_limitation_info.maximum_calls_per_day).to eq(5)
   end
+
+  it "persists notice period edits when saved with the keyboard" do
+    visit edit_link_path(call.unique_permalink)
+
+    expect(page).to have_field("Notice period", with: 3)
+    fill_in "Notice period", with: 24, fill_options: { clear: :backspace }
+    find_button("Save changes").send_keys(:enter)
+    expect(page).to have_alert(text: "Changes saved!")
+    expect(call.call_limitation_info.reload.minimum_notice_in_minutes).to eq(1440)
+
+    refresh
+    expect(page).to have_field("Notice period", with: 1)
+    expect(page).to have_select("Units", selected: "days", visible: false)
+  end
 end
