@@ -192,33 +192,42 @@ export const Wishlist = ({
   const [items, setItems] = React.useState(initialItems);
   const [pagination, setPagination] = React.useState(initialPagination);
   const [isEditing, setIsEditing] = React.useState(false);
-  const [loadingMore, setLoadingMore] = React.useState(false);
+  const loadingMore = React.useRef(false);
+  const paginationGeneration = React.useRef(0);
   const gridRef = React.useRef<HTMLDivElement | null>(null);
 
-  const loadMoreWishlistItems = async () => {
-    if (loadingMore) return;
+  const loadMoreWishlistItems = async (page = pagination.next) => {
+    if (loadingMore.current || page === null) return;
 
-    setLoadingMore(true);
+    loadingMore.current = true;
+    const generation = paginationGeneration.current;
     try {
       const loaded = await fetchPaginatedWishlistItems({
         wishlist_id: id,
-        page: pagination.next,
+        page,
       });
+      if (generation !== paginationGeneration.current) return;
       setItems((prev) => uniqBy([...prev, ...loaded.items], "id"));
       setPagination(loaded.pagination);
     } catch (e) {
+      if (generation !== paginationGeneration.current) return;
       assertResponseError(e);
       showAlert("An error occurred while loading more items", "error");
+    } finally {
+      loadingMore.current = false;
+      if (generation !== paginationGeneration.current) void loadMoreWishlistItems(1);
     }
-    setLoadingMore(false);
   };
 
   React.useEffect(() => {
+    const generation = paginationGeneration.current;
     const observer = new IntersectionObserver((e) => {
-      if (e[0]?.isIntersecting && !loadingMore && pagination.next) void loadMoreWishlistItems();
+      if (generation !== paginationGeneration.current) return;
+      if (e[0]?.isIntersecting && pagination.next) void loadMoreWishlistItems();
     });
 
-    if (items.length && gridRef.current?.lastElementChild) observer.observe(gridRef.current.lastElementChild);
+    const target = gridRef.current?.lastElementChild ?? gridRef.current;
+    if (pagination.next && target) observer.observe(target);
 
     return () => observer.disconnect();
   }, [pagination, items]);
@@ -283,9 +292,11 @@ export const Wishlist = ({
                 item={item}
                 canEdit={can_edit}
                 onDelete={() => {
+                  paginationGeneration.current += 1;
                   setItems((prev) => prev.filter((i) => i.id !== item.id));
-                  // Go back to first page to avoid empty last page
-                  setPagination(initialPagination);
+                  // Removing a row shifts unread rows onto earlier offset pages.
+                  setPagination({ ...initialPagination, next: 1 });
+                  void loadMoreWishlistItems(1);
                 }}
               />
             ))}
