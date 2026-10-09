@@ -3,6 +3,7 @@ import * as React from "react";
 import { trackUserProductAction } from "$app/data/user_action_event";
 import type { Discount } from "$app/parsers/checkout";
 import { CustomButtonTextOption } from "$app/parsers/product";
+import { discountAppliesToOption } from "$app/utils/offer-code";
 import { formatInstallmentPaymentSchedule } from "$app/utils/price";
 import { assertResponseError } from "$app/utils/request";
 import { trackProductEvent } from "$app/utils/user_analytics";
@@ -129,7 +130,11 @@ export const CtaButton = React.forwardRef<HTMLAnchorElement, Props>(
     if ((product.pwyw || selectedOption?.is_pwyw) && selection.price.value != null) {
       if (pppDiscounted && product.ppp_details) {
         price /= product.ppp_details.factor;
-      } else if (discountCode?.valid && hasMetDiscountConditions(discountCode.discount, selection.quantity)) {
+      } else if (
+        discountCode?.valid &&
+        discountAppliesToOption(discountCode.discount, product, selection.optionId) &&
+        hasMetDiscountConditions(discountCode.discount, selection.quantity)
+      ) {
         price = getUndiscountedPWYWPrice(price, discountCode.discount, selection.quantity, {
           discounted: discountedPriceCents,
           undiscounted: priceCents,
