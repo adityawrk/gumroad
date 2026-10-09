@@ -225,6 +225,78 @@ describe Order::CreateService, :vcr do
       ))
     end
 
+    context "with an option-scoped discount minimum amount" do
+      let(:seller_1) { create(:user, email: "seller@example.com") }
+      let(:category) { create(:variant_category, link: product_1) }
+      let(:eligible_option) { create(:variant, variant_category: category, name: "Eligible") }
+      let(:other_option) { create(:variant, variant_category: category, name: "Other") }
+      let(:offer_code) do
+        create(:offer_code, user: seller_1, products: [product_1], variants: [eligible_option],
+                            minimum_amount_cents: price_1, amount_cents: 1_00)
+      end
+
+      before do
+        params[:email] = "buyer@example.com"
+        params[:line_items] = [{
+          uid: "eligible",
+          permalink: product_1.unique_permalink,
+          price_cents: price_1,
+          perceived_price_cents: price_1 - 1_00,
+          quantity: 1,
+          variants: [eligible_option.external_id],
+          discount_code: offer_code.code,
+        }]
+      end
+
+      it "creates an eligible option purchase at the exact minimum amount" do
+        order, purchase_responses = described_class.new(params:).perform
+
+        expect(purchase_responses).to be_empty
+        expect(order.purchases.sole).to have_attributes(offer_code:, displayed_price_cents: price_1 - 1_00)
+        expect(order.purchases.sole.variant_attributes).to eq([eligible_option])
+      end
+
+      it "combines eligible option lines using each submitted quantity subtotal" do
+        offer_code.update!(variants: [eligible_option, other_option], minimum_amount_cents: price_1 * 3)
+        params[:line_items] << params[:line_items].first.merge(
+          uid: "other-eligible", quantity: 2, price_cents: price_1 * 2,
+          perceived_price_cents: (price_1 - 1_00) * 2, variants: [other_option.external_id]
+        )
+
+        order, purchase_responses = described_class.new(params:).perform
+
+        expect(purchase_responses).to be_empty
+        expect(order.purchases.map(&:offer_code)).to eq([offer_code, offer_code])
+        expect(order.purchases.map(&:displayed_price_cents)).to eq([price_1 - 1_00, (price_1 - 1_00) * 2])
+      end
+
+      it "excludes the other option's spend when the eligible line is below the minimum" do
+        offer_code.update!(minimum_amount_cents: price_1 * 2)
+        params[:line_items] << params[:line_items].first.except(:discount_code).merge(
+          uid: "ineligible", perceived_price_cents: price_1, variants: [other_option.external_id]
+        )
+
+        order, purchase_responses = described_class.new(params:).perform
+
+        expect(purchase_responses.fetch("eligible")[:error_message]).to eq("Sorry, you have not met the offer code's minimum amount.")
+        expect(order.purchases.sole).to have_attributes(offer_code: nil, displayed_price_cents: price_1)
+        expect(order.purchases.sole.variant_attributes).to eq([other_option])
+      end
+
+      it "continues to accept unscoped products without variant selections" do
+        offer_code.update!(products: [product_2], variants: [], minimum_amount_cents: price_2)
+        params[:line_items].first.merge!(
+          permalink: product_2.unique_permalink, price_cents: price_2, perceived_price_cents: price_2 - 1_00
+        )
+        params[:line_items].first.delete(:variants)
+
+        order, purchase_responses = described_class.new(params:).perform
+
+        expect(purchase_responses).to be_empty
+        expect(order.purchases.sole).to have_attributes(link: product_2, offer_code:, displayed_price_cents: price_2 - 1_00)
+      end
+    end
+
     context "with a fixed discount applied once per cart" do
       let(:offer_code) do
         create(
