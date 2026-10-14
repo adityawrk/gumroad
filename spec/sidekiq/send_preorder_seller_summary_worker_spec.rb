@@ -25,6 +25,23 @@ describe SendPreorderSellerSummaryWorker, :vcr do
     SendPreorderSellerSummaryWorker.new.perform(@preorder_product.id)
   end
 
+  it "sends the summary email when charging completes before the final attempt",
+     vcr: { cassette_name: "SendPreorderSellerSummaryWorker/sends_the_summary_email_if_all_preorders_are_charged" } do
+    authorization_purchase = build(:purchase, link: @product, chargeable: @card_will_succeed, purchase_state: "in_progress", is_preorder_authorization: true)
+    preorder = @preorder_product.build_preorder(authorization_purchase)
+    preorder.authorize!
+    preorder.mark_authorization_successful
+    preorder.charge!
+
+    expect(ContactingCreatorMailer).to receive(:preorder_summary).with(@preorder_product.id).and_return(@mail_double)
+    expect(ErrorNotifier).not_to receive(:notify)
+
+    SendPreorderSellerSummaryWorker.new.perform(
+      @preorder_product.id,
+      SendPreorderSellerSummaryWorker::MAX_ATTEMPTS_TO_WAIT_FOR_ALL_CHARGED,
+    )
+  end
+
   it "does not send the summary email if there are un-charged preorders" do
     authorization_purchase = build(:purchase, link: @product, chargeable: @card_will_succeed, purchase_state: "in_progress", is_preorder_authorization: true)
     preorder = @preorder_product.build_preorder(authorization_purchase)
@@ -53,6 +70,26 @@ describe SendPreorderSellerSummaryWorker, :vcr do
   end
 
   context "when preorders take more than 24h to charge" do
+    it "times out without scheduling another attempt at the limit",
+       vcr: { cassette_name: "SendPreorderSellerSummaryWorker/when_preorders_take_more_than_24h_to_charge/stops_waiting_and_notifies_error_tracker" } do
+      authorization_purchase = build(:purchase, link: @product, chargeable: @card_will_decline, purchase_state: "in_progress",
+                                                is_preorder_authorization: true)
+      preorder = @preorder_product.build_preorder(authorization_purchase)
+      preorder.authorize!
+      preorder.mark_authorization_successful
+
+      expect(ContactingCreatorMailer).not_to receive(:preorder_summary)
+      expect(SendPreorderSellerSummaryWorker).not_to receive(:perform_in)
+      expect(ErrorNotifier).to receive(:notify).with("Timed out waiting for all preorders to be charged. PreorderLink: #{@preorder_product.id}.")
+
+      expect do
+        SendPreorderSellerSummaryWorker.new.perform(
+          @preorder_product.id,
+          SendPreorderSellerSummaryWorker::MAX_ATTEMPTS_TO_WAIT_FOR_ALL_CHARGED,
+        )
+      end.to raise_error(/Timed out waiting for all preorders to be charged/)
+    end
+
     it "stops waiting and notifies error tracker", :sidekiq_inline do
       authorization_purchase = build(:purchase, link: @product, chargeable: @card_will_decline, purchase_state: "in_progress",
                                                 is_preorder_authorization: true)
