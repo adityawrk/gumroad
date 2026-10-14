@@ -106,6 +106,28 @@ describe "Affiliates", type: :system, js: true do
     expect(page).to have_table "Requests", with_rows: [{ "Name" => affiliate_request.name }]
   end
 
+  it "shows a stable fallback when an affiliate's products have been deleted" do
+    seller = create(:user)
+    product = create(:product, user: seller)
+    affiliate = create(
+      :direct_affiliate,
+      seller:,
+      products: [product],
+      affiliate_basis_points: 25_00,
+      affiliate_user: create(:user, name: "Deleted Product Affiliate"),
+    )
+    product.update!(deleted_at: Time.current)
+
+    sign_in seller
+    visit affiliates_path
+
+    expect(page).to have_table "Affiliates", with_rows: [
+      { "Name" => affiliate.affiliate_user.name, "Product" => "No active products", "Commission" => "25%" },
+    ]
+    expect(page).to have_link("No active products", href: affiliate.referral_url)
+    expect(page).not_to have_content("Infinity%")
+  end
+
   context "pagination" do
     let(:seller) { create(:user) }
     let(:product) { create(:product, user: seller, price_cents: 2000) }

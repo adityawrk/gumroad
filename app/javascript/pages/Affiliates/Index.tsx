@@ -5,6 +5,11 @@ import { parseISO } from "date-fns";
 import * as React from "react";
 
 import { type Affiliate, type AffiliateRequest, type AffiliateStatistics, getStatistics } from "$app/data/affiliates";
+import {
+  affiliateProductName,
+  formatFeePercent,
+  formattedFeePercentLabel,
+} from "$app/pages/Affiliates/affiliateLabels";
 import { formatPriceCentsWithCurrencySymbol } from "$app/utils/currency";
 import { assertResponseError } from "$app/utils/request";
 
@@ -277,24 +282,8 @@ export default function AffiliatesIndex() {
   };
   const thProps = useSortingTableDriver<SortKey>(sort, onSetSort);
 
-  const formatAffiliateBasisPoints = (basisPoints: number) =>
-    (basisPoints / 100).toLocaleString([], { style: "percent" });
-
-  const formattedFeePercentLabel = (affiliate: Affiliate) => {
-    if (affiliate.apply_to_all_products) return formatAffiliateBasisPoints(affiliate.fee_percent);
-
-    const productCommissions = affiliate.products.map((product) => product.fee_percent ?? 0);
-    const minFeePercent = Math.min(...productCommissions);
-    const maxFeePercent = Math.max(...productCommissions);
-    return minFeePercent === maxFeePercent
-      ? formatAffiliateBasisPoints(minFeePercent)
-      : `${formatAffiliateBasisPoints(minFeePercent)} - ${formatAffiliateBasisPoints(maxFeePercent)}`;
-  };
-
-  const productName = (products: Affiliate["products"]) =>
-    products.length === 1 ? (products[0]?.name ?? "") : `${products.length} products`;
   const productTooltipLabel = (products: Affiliate["products"]) =>
-    products.map((product) => `${product.name} (${formatAffiliateBasisPoints(product.fee_percent ?? 0)})`).join(", ");
+    products.map((product) => `${product.name} (${formatFeePercent(product.fee_percent ?? 0)})`).join(", ");
 
   const remove = (affiliateId: string) => {
     if (selectedAffiliate) setSelectedAffiliate(null);
@@ -399,7 +388,7 @@ export default function AffiliatesIndex() {
                                 tip={enabledProducts.length <= 1 ? null : productTooltipLabel(enabledProducts)}
                               >
                                 <a href={affiliate.product_referral_url} onClick={(e) => e.stopPropagation()}>
-                                  {productName(enabledProducts)}
+                                  {affiliateProductName(enabledProducts)}
                                 </a>
                               </WithTooltip>
                             </TableCell>
