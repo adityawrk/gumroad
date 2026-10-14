@@ -2,6 +2,7 @@
 
 class Api::Mobile::AnalyticsController < Api::Mobile::BaseController
   MAX_BY_REFERRAL_DATE_RANGE_DAYS = 365
+  DATE_RANGE_OFFSETS = { "1d" => 0, "1w" => 6, "1m" => 29, "1y" => 364 }.freeze
 
   before_action -> { doorkeeper_authorize! :creator_api }
   before_action :set_date_range, only: [:by_date, :by_state, :by_referral]
@@ -95,15 +96,28 @@ class Api::Mobile::AnalyticsController < Api::Mobile::BaseController
         if params[:date_range] == "all"
           @start_date = GUMROAD_STARTED_DATE
         else
-          offset = { "1d" => 0, "1w" => 6, "1m" => 29, "1y" => 364 }.fetch(params[:date_range])
+          offset = DATE_RANGE_OFFSETS[params[:date_range]]
+          return render_invalid_date_range if offset.nil?
+
           @start_date = @end_date - offset
         end
       elsif params[:start_date] && params[:end_date]
-        @end_date = Date.parse(params[:end_date])
-        @start_date = Date.parse(params[:start_date])
+        @end_date = parse_analytics_date(params[:end_date])
+        @start_date = parse_analytics_date(params[:start_date])
+        render_invalid_date_range if @start_date.nil? || @end_date.nil?
       else
         @end_date = ActiveSupport::TimeZone[current_resource_owner.timezone].today.to_date
         @start_date = @end_date - 29
       end
+    end
+
+    def parse_analytics_date(value)
+      Date.parse(value)
+    rescue Date::Error, TypeError
+      nil
+    end
+
+    def render_invalid_date_range
+      render json: { error: "Invalid date range." }, status: :bad_request
     end
 end
