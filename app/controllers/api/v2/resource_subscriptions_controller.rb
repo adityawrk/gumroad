@@ -40,7 +40,10 @@ class Api::V2::ResourceSubscriptionsController < Api::V2::BaseController
   def destroy
     resource_subscription = ResourceSubscription.find_by_external_id(params[:id])
 
-    if resource_subscription && doorkeeper_token.application_id == resource_subscription.oauth_application.id
+    if resource_subscription &&
+       doorkeeper_token.application_id == resource_subscription.oauth_application_id &&
+       resource_subscription.user_id.present? &&
+       resource_subscription.user_id == current_resource_owner&.id
       resource_subscription.mark_deleted!
       success_with_resource_subscription(nil)
     else
