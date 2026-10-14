@@ -74,14 +74,14 @@ class CommunitiesController < ApplicationController
     end
 
     def message_cursor
-      @_message_cursor ||= params[:cursor].presence || last_read_timestamp || Time.current.iso8601
+      @_message_cursor ||= params[:cursor].presence || last_read_cursor || Time.current.iso8601
     end
 
-    def last_read_timestamp
+    def last_read_cursor
       last_read = LastReadCommunityChatMessage
         .includes(:community_chat_message)
         .find_by(user: current_seller, community: @community)
-      last_read&.community_chat_message&.created_at&.iso8601
+      last_read ? PaginatedCommunityChatMessagesPresenter.cursor_for(last_read.community_chat_message) : nil
     end
 
     def message_fetch_type

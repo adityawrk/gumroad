@@ -42,7 +42,7 @@ RSpec.describe PaginatedCommunityChatMessagesPresenter do
            CommunityChatMessagePresenter.new(message: message2).props]
         )
         expect(props[:next_older_timestamp]).to be_nil
-        expect(props[:next_newer_timestamp]).to eq(message3.created_at.iso8601)
+        expect(props[:next_newer_timestamp]).to eq(PaginatedCommunityChatMessagesPresenter.cursor_for(message3))
       end
 
       context "when there are more than MESSAGES_PER_PAGE older messages" do
@@ -58,7 +58,7 @@ RSpec.describe PaginatedCommunityChatMessagesPresenter do
 
         it "returns MESSAGES_PER_PAGE messages and next_older_timestamp" do
           expect(props[:messages].length).to eq(100)
-          expect(props[:next_older_timestamp]).to eq(older_messages.last.created_at.iso8601)
+          expect(props[:next_older_timestamp]).to eq(PaginatedCommunityChatMessagesPresenter.cursor_for(older_messages.last))
           expect(props[:next_newer_timestamp]).to be_nil
         end
       end
@@ -76,7 +76,7 @@ RSpec.describe PaginatedCommunityChatMessagesPresenter do
           [CommunityChatMessagePresenter.new(message: message1).props,
            CommunityChatMessagePresenter.new(message: message2).props]
         )
-        expect(props[:next_older_timestamp]).to eq(message3.created_at.iso8601)
+        expect(props[:next_older_timestamp]).to eq(PaginatedCommunityChatMessagesPresenter.cursor_for(message3))
         expect(props[:next_newer_timestamp]).to be_nil
       end
 
@@ -93,7 +93,7 @@ RSpec.describe PaginatedCommunityChatMessagesPresenter do
 
         it "returns MESSAGES_PER_PAGE messages and next_newer_timestamp" do
           expect(props[:messages].length).to eq(100)
-          expect(props[:next_newer_timestamp]).to eq(newer_messages.first.created_at.iso8601)
+          expect(props[:next_newer_timestamp]).to eq(PaginatedCommunityChatMessagesPresenter.cursor_for(newer_messages.first))
           expect(props[:next_older_timestamp]).to be_nil
         end
       end
@@ -115,8 +115,8 @@ RSpec.describe PaginatedCommunityChatMessagesPresenter do
         older_messages = messages.select { |m| m.content.to_i < 52 }
         newer_messages = messages.select { |m| m.content.to_i >= 52 }.reverse
         expect(props[:messages].map { |m| m[:content].to_i }.sort).to eq((older_messages.take(50) + newer_messages.take(50)).map(&:content).map(&:to_i).sort)
-        expect(props[:next_older_timestamp]).to eq(older_messages.last.created_at.iso8601)
-        expect(props[:next_newer_timestamp]).to eq(newer_messages.last.created_at.iso8601)
+        expect(props[:next_older_timestamp]).to eq(PaginatedCommunityChatMessagesPresenter.cursor_for(older_messages.last))
+        expect(props[:next_newer_timestamp]).to eq(PaginatedCommunityChatMessagesPresenter.cursor_for(newer_messages.last))
       end
     end
 
@@ -132,7 +132,32 @@ RSpec.describe PaginatedCommunityChatMessagesPresenter do
       it "excludes deleted messages" do
         expect(props[:messages]).to be_empty
         expect(props[:next_older_timestamp]).to be_nil
-        expect(props[:next_newer_timestamp]).to eq(timestamp)
+        expect(props[:next_newer_timestamp]).to eq(PaginatedCommunityChatMessagesPresenter.cursor_for(message2))
+      end
+    end
+
+    context "when messages share a database timestamp" do
+      let(:same_timestamp) { Time.zone.local(2026, 8, 30, 12, 0, 0) }
+      let!(:same_timestamp_messages) do
+        create_list(:community_chat_message, 101, community:, user: seller, created_at: same_timestamp)
+      end
+
+      it "does not repeat same-second messages while paging newer messages" do
+        first_page = described_class.new(community:, timestamp: same_timestamp.iso8601, fetch_type: "newer").props
+        second_page = described_class.new(community:, timestamp: first_page[:next_newer_timestamp], fetch_type: "newer").props
+
+        expect(first_page[:messages]).to have_attributes(size: 100)
+        expect(second_page[:messages]).to have_attributes(size: 1)
+        expect(second_page[:messages].map { |message| message[:id] } & first_page[:messages].map { |message| message[:id] }).to be_empty
+      end
+
+      it "does not repeat same-second messages while paging older messages" do
+        first_page = described_class.new(community:, timestamp: same_timestamp.iso8601, fetch_type: "older").props
+        second_page = described_class.new(community:, timestamp: first_page[:next_older_timestamp], fetch_type: "older").props
+
+        expect(first_page[:messages]).to have_attributes(size: 100)
+        expect(second_page[:messages]).to have_attributes(size: 1)
+        expect(second_page[:messages].map { |message| message[:id] } & first_page[:messages].map { |message| message[:id] }).to be_empty
       end
     end
   end
