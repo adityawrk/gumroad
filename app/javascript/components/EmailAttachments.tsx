@@ -307,6 +307,7 @@ export const useUploadFiles = (): null | ((emailId: string, files: File[]) => vo
       if (typeof status === "string") {
         // status contains error string if any, otherwise index of file in array
         showAlert(status, "error");
+        filesDispatch({ type: "remove-file", fileId: id });
       }
     });
   };
