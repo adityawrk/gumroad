@@ -28,7 +28,7 @@ class Api::V2::SubscribersController < Api::V2::BaseController
       rescue ArgumentError
         return error_400("Invalid page_key.")
       end
-      subscriptions = subscriptions.where("created_at <= ? and id < ?", last_record_created_at, last_record_id)
+      subscriptions = subscriptions.where("created_at < ? OR (created_at = ? AND id < ?)", last_record_created_at, last_record_created_at, last_record_id)
     end
 
     if params[:paginated].in?(["1", "true"]) || params[:page_key].present?
