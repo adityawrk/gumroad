@@ -52,10 +52,13 @@ module Product::Sorting
         return { page: 1, pages: 1 }, self
       end
 
+      product_ids = unscope(:order).distinct.pluck(:id)
+      return [{ page: 1, pages: 1 }, none] if product_ids.empty?
+
       response = Link.search(Link.search_options(
         {
-          user_id:,
-          ids: self.pluck(:id),
+          user_id: Link.where(id: product_ids).distinct.pluck(:user_id).presence || user_id,
+          ids: product_ids,
           sort:,
           size: per_page,
           from: per_page * (page.to_i - 1) + 1

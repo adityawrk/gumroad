@@ -1,7 +1,7 @@
 import { router } from "@inertiajs/react";
 import * as React from "react";
 
-import { Product } from "$app/data/collabs";
+import { Product, SortKey } from "$app/data/collabs";
 import { classNames } from "$app/utils/classNames";
 import { formatPriceCentsWithCurrencySymbol } from "$app/utils/currency";
 
@@ -19,17 +19,42 @@ import {
   TableRow,
 } from "$app/components/ui/Table";
 import { useUserAgentInfo } from "$app/components/UserAgent";
-import { useClientSortingTableDriver } from "$app/components/useSortingTableDriver";
+import { Sort, useSortingTableDriver } from "$app/components/useSortingTableDriver";
 
-export const CollabsProductsTable = (props: { entries: Product[]; pagination: PaginationProps }) => {
+export const CollabsProductsTable = (props: {
+  entries: Product[];
+  pagination: PaginationProps;
+  sort?: Sort<SortKey> | null | undefined;
+}) => {
   const [isLoading, setIsLoading] = React.useState(false);
   const tableRef = React.useRef<HTMLTableElement>(null);
   const userAgentInfo = useUserAgentInfo();
-  const { items: products, thProps } = useClientSortingTableDriver(props.entries);
+  const [sort, setSort] = React.useState<Sort<SortKey> | null>(props.sort ?? null);
+  const products = props.entries;
+
+  const onSetSort = (newSort: Sort<SortKey>) => {
+    router.reload({
+      data: {
+        products_sort_key: newSort.key,
+        products_sort_direction: newSort.direction,
+        products_page: undefined,
+      },
+      only: ["products_data"],
+      onBefore: () => setSort(newSort),
+      onStart: () => setIsLoading(true),
+      onFinish: () => setIsLoading(false),
+    });
+  };
+
+  const thProps = useSortingTableDriver<SortKey>(sort, onSetSort);
 
   const handlePageChange = (page: number) => {
     router.reload({
-      data: { products_page: page },
+      data: {
+        products_page: page,
+        products_sort_key: sort?.key,
+        products_sort_direction: sort?.direction,
+      },
       only: ["products_data"],
       onStart: () => setIsLoading(true),
       onFinish: () => {

@@ -4,6 +4,10 @@ require "spec_helper"
 
 describe Product::Sorting do
   let!(:seller) { create(:recommendable_user) }
+  let!(:gumroad_merchant_account) do
+    MerchantAccount.gumroad(StripeChargeProcessor.charge_processor_id) ||
+      create(:merchant_account, user: nil, charge_processor_merchant_id: "acct_#{SecureRandom.hex(8)}")
+  end
 
   describe ".sorted_by" do
     # These examples tie-break on `created_at desc`, so the four products must keep a fixed relative
@@ -162,6 +166,30 @@ describe Product::Sorting do
       pagination, products = seller.products.elasticsearch_sorted_and_paginated_by(key: "is_recommendable", direction: "desc", page: 1, per_page: 4, user_id: seller.id)
       expect(pagination).to eq({ page: 1, pages: 1 })
       expect(products.map(&:name)).to eq(recommendable + non_recommendable)
+    end
+
+    it "returns products from every seller represented in the collection" do
+      other_seller = create(:recommendable_user)
+      other_seller_product = create(:product, :recommendable, price_cents: 100, user: other_seller, name: "Other seller product")
+      index_model_records(Link)
+      collection = Link.where(id: [product1.id, other_seller_product.id])
+
+      pagination, products = collection.elasticsearch_sorted_and_paginated_by(key: "display_price_cents", direction: "asc", page: 1, per_page: 1, user_id: seller.id)
+
+      expect(pagination).to eq({ page: 1, pages: 2 })
+      expect(products.map(&:id)).to eq([other_seller_product.id])
+
+      pagination, products = collection.elasticsearch_sorted_and_paginated_by(key: "display_price_cents", direction: "asc", page: 2, per_page: 1, user_id: seller.id)
+
+      expect(pagination).to eq({ page: 2, pages: 2 })
+      expect(products.map(&:id)).to eq([product1.id])
+    end
+
+    it "does not widen an empty collection to the seller's products" do
+      pagination, products = Link.none.elasticsearch_sorted_and_paginated_by(key: "display_price_cents", direction: "asc", page: 1, per_page: 2, user_id: seller.id)
+
+      expect(pagination).to eq({ page: 1, pages: 1 })
+      expect(products).to be_empty
     end
   end
 

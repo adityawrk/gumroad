@@ -1,7 +1,7 @@
 import { router } from "@inertiajs/react";
 import * as React from "react";
 
-import { Membership } from "$app/data/collabs";
+import { Membership, SortKey } from "$app/data/collabs";
 import { classNames } from "$app/utils/classNames";
 import { formatPriceCentsWithCurrencySymbol } from "$app/utils/currency";
 
@@ -19,17 +19,42 @@ import {
   TableRow,
 } from "$app/components/ui/Table";
 import { useUserAgentInfo } from "$app/components/UserAgent";
-import { useClientSortingTableDriver } from "$app/components/useSortingTableDriver";
+import { Sort, useSortingTableDriver } from "$app/components/useSortingTableDriver";
 
-export const CollabsMembershipsTable = (props: { entries: Membership[]; pagination: PaginationProps }) => {
+export const CollabsMembershipsTable = (props: {
+  entries: Membership[];
+  pagination: PaginationProps;
+  sort?: Sort<SortKey> | null | undefined;
+}) => {
   const [isLoading, setIsLoading] = React.useState(false);
   const tableRef = React.useRef<HTMLTableElement>(null);
   const { locale } = useUserAgentInfo();
-  const { items: memberships, thProps } = useClientSortingTableDriver(props.entries);
+  const [sort, setSort] = React.useState<Sort<SortKey> | null>(props.sort ?? null);
+  const memberships = props.entries;
+
+  const onSetSort = (newSort: Sort<SortKey>) => {
+    router.reload({
+      data: {
+        memberships_sort_key: newSort.key,
+        memberships_sort_direction: newSort.direction,
+        memberships_page: undefined,
+      },
+      only: ["memberships_data"],
+      onBefore: () => setSort(newSort),
+      onStart: () => setIsLoading(true),
+      onFinish: () => setIsLoading(false),
+    });
+  };
+
+  const thProps = useSortingTableDriver<SortKey>(sort, onSetSort);
 
   const handlePageChange = (page: number) => {
     router.reload({
-      data: { memberships_page: page },
+      data: {
+        memberships_page: page,
+        memberships_sort_key: sort?.key,
+        memberships_sort_direction: sort?.direction,
+      },
       only: ["memberships_data"],
       onStart: () => setIsLoading(true),
       onFinish: () => {
