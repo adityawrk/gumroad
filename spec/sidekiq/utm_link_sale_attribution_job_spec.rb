@@ -21,6 +21,46 @@ describe UtmLinkSaleAttributionJob do
     expect(driven_sale.utm_link_visit_id).to eq(visit.id)
   end
 
+  it "applies each purchase's lower cutoff when an order spans different dates" do
+    purchased_at = Time.zone.local(2026, 9, 10, 12)
+    earlier_purchase = create(:purchase, link: product, seller:, created_at: purchased_at)
+    later_purchase = create(:purchase, link: product, seller:, created_at: purchased_at + 2.days)
+    order.purchases << earlier_purchase << later_purchase
+    visit = create(:utm_link_visit, utm_link:, browser_guid:, created_at: purchased_at - 6.days)
+
+    travel_to purchased_at + 14.days do
+      described_class.new.perform(order.id, browser_guid)
+    end
+
+    driven_sale = UtmLinkDrivenSale.sole
+    expect(driven_sale.purchase_id).to eq(earlier_purchase.id)
+    expect(driven_sale.utm_link_visit_id).to eq(visit.id)
+  end
+
+  it "preserves the inclusive calendar-day cutoff when attribution is retried" do
+    purchased_at = Time.zone.local(2026, 9, 10, 12)
+    purchase = create(:purchase, link: product, seller:, created_at: purchased_at)
+    other_product = create(:product, user: seller)
+    other_purchase = create(:purchase, link: other_product, seller:, created_at: purchased_at)
+    order.purchases << purchase << other_purchase
+    utm_link.update!(target_resource_type: "product_page", target_resource_id: product.id)
+    cutoff = (purchased_at - described_class::ATTRIBUTION_WINDOW).beginning_of_day
+    visit = create(:utm_link_visit, utm_link:, browser_guid:, created_at: cutoff)
+    expired_link = create(:utm_link, seller:, target_resource_type: "product_page", target_resource_id: other_product.id)
+    create(:utm_link_visit, utm_link: expired_link, browser_guid:, created_at: cutoff - 1.second)
+
+    travel_to purchased_at + 14.days do
+      described_class.new.perform(order.id, browser_guid)
+    end
+    travel_to purchased_at + 15.days do
+      expect { described_class.new.perform(order.id, browser_guid) }.not_to change(UtmLinkDrivenSale, :count)
+    end
+
+    driven_sale = UtmLinkDrivenSale.sole
+    expect(driven_sale.purchase_id).to eq(purchase.id)
+    expect(driven_sale.utm_link_visit_id).to eq(visit.id)
+  end
+
   it "does not attribute purchases to visits outside the attribution window" do
     purchase = create(:purchase, link: product, seller:)
     order.purchases << purchase
@@ -29,6 +69,23 @@ describe UtmLinkSaleAttributionJob do
     expect do
       described_class.new.perform(order.id, browser_guid)
     end.not_to change { utm_link.utm_link_driven_sales.count }
+  end
+
+  it "keeps the purchase's attribution window when the job runs after a delay" do
+    purchased_at = Time.zone.local(2026, 9, 10, 12)
+    purchase = create(:purchase, link: product, seller:, created_at: purchased_at)
+    order.purchases << purchase
+    visit = create(:utm_link_visit, utm_link:, browser_guid:, created_at: purchased_at - 6.days)
+    expired_link = create(:utm_link, seller:)
+    create(:utm_link_visit, utm_link: expired_link, browser_guid:, created_at: purchased_at - 8.days)
+
+    travel_to purchased_at + 14.days do
+      described_class.new.perform(order.id, browser_guid)
+    end
+
+    driven_sale = UtmLinkDrivenSale.sole
+    expect(driven_sale.purchase_id).to eq(purchase.id)
+    expect(driven_sale.utm_link_visit_id).to eq(visit.id)
   end
 
   it "does not attribute a purchase to a visit made after it" do
