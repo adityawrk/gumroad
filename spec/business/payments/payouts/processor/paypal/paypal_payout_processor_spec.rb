@@ -1220,6 +1220,34 @@ describe PaypalPayoutProcessor do
     end
   end
 
+  describe "split payout fee recording" do
+    it "records a fractional split payout fee in exact cents" do
+      user = create(:user, payment_address: "seller@example.com")
+      payment = create(
+        :payment,
+        user:,
+        payment_address: user.payment_address,
+        processor_fee_cents: 0,
+        was_created_in_split_mode: true,
+        split_payments_info: [{ "state" => "processing" }, { "state" => "processing" }]
+      )
+
+      paypal_event = {
+        "payment_date" => payment.created_at.strftime("%T+%b+%d,+%Y+%Z"),
+        "receiver_email_0" => payment.user.payment_address,
+        "masspay_txn_id_0" => "sometxn1",
+        "status_0" => "Completed",
+        "unique_id_0" => "#{PaypalPayoutProcessor::SPLIT_PAYMENT_UNIQUE_ID_PREFIX}#{payment.id}-1",
+        "mc_fee_0" => "1.15"
+      }
+
+      described_class.handle_paypal_event(paypal_event)
+      described_class.handle_paypal_event(paypal_event)
+
+      expect(payment.reload.processor_fee_cents).to eq(115)
+    end
+  end
+
   describe ".update_split_payment_state" do
     let(:user) { create(:user, payment_address: "seller@example.com") }
     let(:payment) do
