@@ -13,24 +13,45 @@ class UpdatePayoutStatusWorker
     return unless payment.processing?
 
     if payment.was_created_in_split_mode?
-      payment.split_payments_info.each_with_index do |split_payment_info, index|
-        next if split_payment_info["state"] != "pending" # Don't operate on non-pending parts
+      updates = payment.split_payments_info.each_with_index.filter_map do |split_payment_info, index|
+        next if split_payment_info["state"] != "pending"
 
-        new_payment_state =
-          PaypalPayoutProcessor.get_latest_payment_state_from_paypal(split_payment_info["amount_cents"],
-                                                                     split_payment_info["txn_id"],
-                                                                     payment.created_at.beginning_of_day - 1.day,
-                                                                     split_payment_info["state"])
-        payment.split_payments_info[index]["state"] = new_payment_state
-        Rails.logger.info("UpdatePayoutStatusWorker set status for payment #{payment_id} to #{new_payment_state}")
+        details = PaypalPayoutProcessor.get_latest_payment_details_from_paypal(
+          split_payment_info["amount_cents"],
+          split_payment_info["txn_id"],
+          payment.created_at.beginning_of_day - 1.day,
+          split_payment_info["state"]
+        )
+        [index, split_payment_info["txn_id"], details]
       end
-      payment.save!
 
-      if payment.split_payments_info.any? { |split_payment_info| split_payment_info["state"] == "pending" }
-        raise "Some split payment parts are still in the 'pending' state"
-      else
-        PaypalPayoutProcessor.update_split_payment_state(payment)
+      still_pending = false
+      payment.with_lock do
+        return unless payment.processing?
+
+        updates.each do |index, transaction_id, details|
+          split_payment_info = payment.split_payments_info[index]
+          next unless split_payment_info["state"] == "pending" && split_payment_info["txn_id"] == transaction_id
+
+          previous_state = split_payment_info["state"]
+          split_payment_info["state"] = details[:state]
+          if details[:processor_fee_cents]
+            PaypalPayoutProcessor.record_split_payment_processor_fee(
+              payment,
+              split_payment_info,
+              details[:processor_fee_cents],
+              previous_state:,
+              legacy_accounted_fee_cents: details[:legacy_accounted_fee_cents]
+            )
+          end
+          Rails.logger.info("UpdatePayoutStatusWorker set status for payment #{payment_id} to #{details[:state]}")
+        end
+        payment.save!
+
+        still_pending = payment.split_payments_info.any? { |split_payment_info| split_payment_info["state"] == "pending" }
+        PaypalPayoutProcessor.update_split_payment_state(payment) unless still_pending
       end
+      raise "Some split payment parts are still in the 'pending' state" if still_pending
     else
       new_payment_state =
         PaypalPayoutProcessor.get_latest_payment_state_from_paypal(payment.amount_cents,
