@@ -1,15 +1,26 @@
 # frozen_string_literal: true
 
 class Purchase::VariantUpdaterService
-  attr_reader :purchase, :variant_id, :new_variant, :product, :new_quantity
+  MAX_QUANTITY = 2_147_483_647
+
+  attr_reader :purchase, :variant_id, :new_variant, :product, :new_quantity, :error
 
   def initialize(purchase:, variant_id:, quantity:)
     @purchase = purchase
     @variant_id = variant_id
-    @new_quantity = quantity
+    @new_quantity = if quantity.is_a?(Integer)
+      quantity
+    elsif quantity.is_a?(String) && quantity.match?(/\A[0-9]+\z/)
+      Integer(quantity, 10)
+    end
   end
 
   def perform
+    unless new_quantity&.between?(1, MAX_QUANTITY)
+      @error = :invalid_quantity
+      return false
+    end
+
     @product = purchase.link
 
     if product.skus_enabled?

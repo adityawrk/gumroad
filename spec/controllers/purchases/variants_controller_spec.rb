@@ -72,6 +72,14 @@ describe Purchases::VariantsController do
         expect(purchase.quantity).to eq 2
       end
 
+      it "rejects a partially numeric quantity without changing the purchase" do
+        put :update, format: :json, params: { purchase_id: purchase.external_id, variant_id: green_variant.external_id, quantity: "2many" }
+
+        expect(response).to have_http_status(:unprocessable_entity)
+        expect(purchase.reload.variant_attributes).to eq [blue_variant]
+        expect(purchase.quantity).to eq 1
+      end
+
       context "for a product with SKUs" do
         it "updates the SKU" do
           product = create(:physical_product, user: seller)

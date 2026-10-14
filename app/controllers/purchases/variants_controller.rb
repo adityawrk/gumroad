@@ -6,13 +6,21 @@ class Purchases::VariantsController < Sellers::BaseController
   def update
     authorize [:audience, @purchase]
 
-    success = Purchase::VariantUpdaterService.new(
+    updater = Purchase::VariantUpdaterService.new(
       purchase: @purchase,
       variant_id: params[:variant_id],
-      quantity: params[:quantity].to_i,
-    ).perform
+      quantity: params[:quantity],
+    )
+    success = updater.perform
 
-    head (success ? :no_content : :not_found)
+    status = if success
+      :no_content
+    elsif updater.error == :invalid_quantity
+      :unprocessable_entity
+    else
+      :not_found
+    end
+    head status
   end
 
   private

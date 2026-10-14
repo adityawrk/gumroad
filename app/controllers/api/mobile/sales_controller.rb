@@ -183,13 +183,16 @@ class Api::Mobile::SalesController < Api::Mobile::BaseController
   def variant
     return fetch_error("Could not find product") if @purchase.link.nil?
 
-    success = Purchase::VariantUpdaterService.new(
+    updater = Purchase::VariantUpdaterService.new(
       purchase: @purchase,
       variant_id: params[:variant_id],
-      quantity: params[:quantity].to_i,
-    ).perform
+      quantity: params[:quantity],
+    )
+    success = updater.perform
     if success
       render json: { success: true }
+    elsif updater.error == :invalid_quantity
+      render json: { success: false, message: "Invalid quantity" }, status: :unprocessable_entity
     else
       render json: { success: false, message: "Variant not found" }, status: :not_found
     end

@@ -129,18 +129,44 @@ describe Purchase::VariantUpdaterService do
           expect(Purchase::VariantUpdaterService).to receive(:new).with(
             purchase: gift_receiver_purchase,
             variant_id: @green_variant.external_id,
-            quantity: 1,
+            quantity: 2,
           ).and_call_original
 
           success = Purchase::VariantUpdaterService.new(
             purchase: gift_sender_purchase,
             variant_id: @green_variant.external_id,
-            quantity: 1,
+            quantity: "2",
           ).perform
 
           expect(success).to be true
           expect(gift_sender_purchase.reload.variant_attributes).to eq [@green_variant]
+          expect(gift_sender_purchase.quantity).to eq 2
           expect(gift_receiver_purchase.reload.variant_attributes).to eq [@green_variant]
+          expect(gift_receiver_purchase.quantity).to eq 2
+        end
+
+        it "rejects an invalid quantity before changing either gift purchase" do
+          state = -> do
+            [
+              gift_sender_purchase.reload.quantity,
+              gift_sender_purchase.variant_attribute_ids,
+              gift_receiver_purchase.reload.quantity,
+              gift_receiver_purchase.variant_attribute_ids,
+              @product.reload.sales_count_for_inventory_cache.to_i,
+              @blue_variant.reload.sales_count_for_inventory_cache.to_i,
+              @green_variant.reload.sales_count_for_inventory_cache.to_i,
+            ]
+          end
+
+          expect do
+            result = Purchase::VariantUpdaterService.new(
+              purchase: gift_sender_purchase,
+              variant_id: @green_variant.external_id,
+              quantity: "2many",
+            ).perform
+
+            expect(result).to be false
+          end.not_to change(&state)
         end
       end
     end
@@ -234,7 +260,7 @@ describe Purchase::VariantUpdaterService do
         expect(green.reload.sales_count_for_inventory_cache.to_i).to eq(green_before + purchase.quantity)
       end
 
-      it "reconciles caches when the variant and quantity both change" do
+      it "normalizes a positive string quantity and reconciles the caches" do
         category = create(:variant_category, link: @product, title: "Color")
         blue = create(:variant, variant_category: category, name: "Blue")
         green = create(:variant, variant_category: category, name: "Green")
@@ -245,14 +271,83 @@ describe Purchase::VariantUpdaterService do
         blue_before = blue.sales_count_for_inventory_cache.to_i
         green_before = green.sales_count_for_inventory_cache.to_i
 
-        Purchase::VariantUpdaterService.new(purchase:, variant_id: green.external_id, quantity: 3).perform
+        Purchase::VariantUpdaterService.new(purchase:, variant_id: green.external_id, quantity: "3").perform
 
+        expect(purchase.reload.quantity).to eq 3
         expect(blue.reload.sales_count_for_inventory_cache.to_i).to eq(blue_before - 1)
         expect(green.reload.sales_count_for_inventory_cache.to_i).to eq(green_before + 3)
       end
     end
 
     context "with invalid arguments" do
+      context "when the quantity is not a positive integer" do
+        before do
+          @product = create(:product)
+          category = create(:variant_category, link: @product, title: "Color")
+          @old_variant = create(:variant, variant_category: category, name: "Blue")
+          @new_variant = create(:variant, variant_category: category, name: "Green")
+          @purchase = create(:purchase, link: @product, variant_attributes: [@old_variant], quantity: 2)
+        end
+
+        {
+          "missing" => nil,
+          "non-numeric" => "many",
+          "partially numeric" => "2many",
+          "hexadecimal" => "0x10",
+          "binary" => "0b10",
+          "underscored" => "2_0",
+          "decimal numeric" => 2.5,
+          "zero" => 0,
+          "zero string" => "0",
+          "negative" => -1,
+          "negative string" => "-1",
+          "quantity above the database limit" => Purchase::VariantUpdaterService::MAX_QUANTITY + 1,
+          "quantity string above the database limit" => (Purchase::VariantUpdaterService::MAX_QUANTITY + 1).to_s,
+          "overlong quantity string" => "9" * 100,
+        }.each do |description, quantity|
+          it "rejects a #{description} quantity without changing the purchase or inventory counters" do
+            state = -> do
+              [
+                @purchase.reload.quantity,
+                @purchase.variant_attribute_ids,
+                @product.reload.sales_count_for_inventory_cache.to_i,
+                @old_variant.reload.sales_count_for_inventory_cache.to_i,
+                @new_variant.reload.sales_count_for_inventory_cache.to_i,
+              ]
+            end
+
+            expect do
+              updater = Purchase::VariantUpdaterService.new(
+                purchase: @purchase,
+                variant_id: @new_variant.external_id,
+                quantity:,
+              )
+              result = updater.perform
+
+              expect(result).to be false
+              expect(updater.error).to eq(:invalid_quantity)
+            end.not_to change(&state)
+          end
+        end
+      end
+
+      it "parses a leading-zero quantity as base 10" do
+        product = create(:product)
+        category = create(:variant_category, link: product, title: "Color")
+        old_variant = create(:variant, variant_category: category, name: "Blue")
+        new_variant = create(:variant, variant_category: category, name: "Green")
+        purchase = create(:purchase, link: product, variant_attributes: [old_variant])
+
+        result = Purchase::VariantUpdaterService.new(
+          purchase:,
+          variant_id: new_variant.external_id,
+          quantity: "010",
+        ).perform
+
+        expect(result).to be true
+        expect(purchase.reload.quantity).to eq(10)
+      end
+
       context "such as an invalid variant_id" do
         it "returns an error" do
           purchase = create(:purchase)
