@@ -3,6 +3,11 @@
 require "spec_helper"
 
 describe Purchase::Searchable do
+  let!(:gumroad_merchant_account) do
+    MerchantAccount.gumroad(StripeChargeProcessor.charge_processor_id) ||
+      create(:merchant_account, user: nil, charge_processor_merchant_id: "acct_#{SecureRandom.hex(8)}")
+  end
+
   before do
     travel_to(Date.new(2019, 1, 1))
   end
@@ -502,12 +507,22 @@ describe Purchase::Searchable do
   end
 
   describe "Product Callbacks" do
-    it "enqueues update_by_query job when taxonomy is updated" do
-      product = create(:product)
+    it "enqueues an update_by_query job for changed purchase search fields" do
+      product = create(:product, name: "Original name", description: "Original description")
       purchase = create(:purchase, link: product)
-      product.update!(taxonomy: create(:taxonomy))
-      expect(ElasticsearchIndexerWorker).to \
-        have_enqueued_sidekiq_job("update_by_query", "source_record_id" => purchase.id, "class_name" => "Purchase", "fields" => %w[taxonomy_id], "query" => PurchaseSearchService.new(product:).body[:query])
+      updates = [
+        [{ name: "Updated name" }, %w[product_name]],
+        [{ description: "Updated description" }, %w[product_description]],
+        [{ taxonomy: create(:taxonomy) }, %w[taxonomy_id]],
+      ]
+
+      updates.each do |attributes, fields|
+        ElasticsearchIndexerWorker.jobs.clear
+        product.update!(**attributes)
+
+        expect(ElasticsearchIndexerWorker).to \
+          have_enqueued_sidekiq_job("update_by_query", "source_record_id" => purchase.id, "class_name" => "Purchase", "fields" => fields, "query" => PurchaseSearchService.new(product:).body[:query])
+      end
     end
 
     it "does not enqueue update_by_query job when product has no sales" do
@@ -518,16 +533,43 @@ describe Purchase::Searchable do
       expect(ElasticsearchIndexerWorker.jobs.size).to eq(0)
     end
 
-    it "updates the sales' Elasticsearch documents when the taxonomy is changed", :sidekiq_inline, :elasticsearch_wait_for_refresh do
-      taxonomies = create_list(:taxonomy, 2)
-      product = create(:product, taxonomy: taxonomies.first)
-      purchases = create_list(:purchase, 2, link: product)
-      expect(get_document_attributes(purchases.first)["taxonomy_id"]).to eq(taxonomies.first.id)
-      expect(get_document_attributes(purchases.last)["taxonomy_id"]).to eq(taxonomies.first.id)
+    it "does not enqueue an update_by_query job for unrelated product changes" do
+      product = create(:product)
+      create(:purchase, link: product)
+      ElasticsearchIndexerWorker.jobs.clear
 
-      product.update!(taxonomy: taxonomies.last)
-      expect(get_document_attributes(purchases.first)["taxonomy_id"]).to eq(taxonomies.last.id)
-      expect(get_document_attributes(purchases.last)["taxonomy_id"]).to eq(taxonomies.last.id)
+      product.update!(custom_receipt: "Thank you")
+
+      expect(ElasticsearchIndexerWorker.jobs.size).to eq(0)
+    end
+
+    it "tracks search fields changed before a later save in the same transaction" do
+      product = create(:product, name: "Original name")
+      purchase = create(:purchase, link: product)
+      ElasticsearchIndexerWorker.jobs.clear
+
+      product.transaction do
+        product.update!(name: "Updated name")
+        product.update!(custom_receipt: "Thank you")
+      end
+
+      expect(ElasticsearchIndexerWorker).to \
+        have_enqueued_sidekiq_job("update_by_query", "source_record_id" => purchase.id, "class_name" => "Purchase", "fields" => %w[product_name], "query" => PurchaseSearchService.new(product:).body[:query])
+    end
+
+    it "updates the sales' Elasticsearch documents when purchase search fields change", :sidekiq_inline, :elasticsearch_wait_for_refresh do
+      taxonomies = create_list(:taxonomy, 2)
+      product = create(:product, name: "Original name", description: "Original description", taxonomy: taxonomies.first)
+      purchases = create_list(:purchase, 2, link: product)
+
+      product.update!(name: "Updated name", description: "Updated description", taxonomy: taxonomies.last)
+
+      purchases.each do |purchase|
+        document = get_document_attributes(purchase)
+        expect(document["product_name"]).to eq("Updated name")
+        expect(document["product_description"]).to eq("Updated description")
+        expect(document["taxonomy_id"]).to eq(taxonomies.last.id)
+      end
     end
   end
 
