@@ -5,6 +5,11 @@ require "shared_examples/authorized_oauth_v1_api_method"
 
 describe Api::V2::PayoutsController do
   before do
+    MerchantAccount.gumroad(StripeChargeProcessor.charge_processor_id) ||
+      create(:merchant_account, user: nil, charge_processor_merchant_id: "acct_#{SecureRandom.hex(8)}")
+    MerchantAccount.gumroad(PaypalChargeProcessor.charge_processor_id) ||
+      create(:merchant_account_paypal, user: nil, charge_processor_merchant_id: "paypal_#{SecureRandom.hex(8)}")
+
     stub_const("ObfuscateIds::CIPHER_KEY", "a" * 32)
     stub_const("ObfuscateIds::NUMERIC_CIPHER_KEY", 123456789)
 
@@ -257,6 +262,40 @@ describe Api::V2::PayoutsController do
 
           expect(payout_ids).not_to include(nil)
           expect(payouts.none? { |p| p["id"].nil? }).to be true
+        end
+
+        it "does not include upcoming payout before the after date" do
+          @params[:after] = Date.new(2025, 9, 19).iso8601
+
+          get :index, params: @params
+
+          expect(response.parsed_body["payouts"]).to be_empty
+        end
+
+        it "includes upcoming payout on the after date" do
+          @params[:after] = Date.new(2025, 9, 18).iso8601
+
+          get :index, params: @params
+
+          expect(response.parsed_body["payouts"].count { _1["id"].nil? }).to eq(1)
+        end
+
+        it "does not include upcoming payout on the before date" do
+          @params[:before] = Date.new(2025, 9, 18).iso8601
+
+          get :index, params: @params
+
+          expect(response.parsed_body["payouts"]).to be_all { _1["id"].present? }
+        end
+
+        it "filters multiple upcoming payouts to the requested date range" do
+          create(:balance, user: @seller, amount_cents: 200_00, date: Date.new(2025, 9, 15), state: "unpaid")
+          @params.merge!(after: Date.new(2025, 9, 19).iso8601, before: Date.new(2025, 9, 26).iso8601)
+
+          get :index, params: @params
+
+          upcoming_payouts = response.parsed_body["payouts"].select { _1["id"].nil? }
+          expect(upcoming_payouts.pluck("created_at")).to eq([Time.zone.parse("2025-09-25").iso8601])
         end
 
         it "does not include upcoming payout when end_date is before current payout end date" do
