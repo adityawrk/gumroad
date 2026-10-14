@@ -98,14 +98,13 @@ class TaxCenterPresenter
     end
 
     def sales_scope
-      start_date = Date.new(year).beginning_of_year
-      end_date = start_date.end_of_year
+      start_at = Date.new(year).in_time_zone(seller.timezone)
 
       seller.sales
         .successful
         .not_fully_refunded
         .not_chargedback_or_chargedback_reversed
-        .where(created_at: start_date..end_date)
+        .where(created_at: start_at...start_at.next_year)
         .where("purchases.price_cents > 0")
     end
 

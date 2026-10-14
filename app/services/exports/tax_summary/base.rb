@@ -14,11 +14,10 @@ class Exports::TaxSummary::Base
 
   private
     def payouts_summary
+      year_start = date_in_year.in_time_zone(@user.timezone)
       return { transaction_cents_by_month: {},
                total_transaction_cents: 0,
-               transactions_count: 0 } unless @user.sales.where("created_at BETWEEN ? AND ?",
-                                                                date_in_year.beginning_of_year,
-                                                                date_in_year.end_of_year).exists?
+               transactions_count: 0 } unless @user.sales.where(created_at: year_start...year_start.next_year).exists?
 
       transaction_cents_by_month = Hash.new(0)
       total_transaction_cents = 0
@@ -40,10 +39,9 @@ class Exports::TaxSummary::Base
     end
 
     def sales_scope_for(date)
+      month_start = date.beginning_of_month.in_time_zone(@user.timezone)
       @user.sales.successful_or_preorder_authorization_successful_and_not_refunded_or_chargedback.
-          where("created_at BETWEEN ? AND ?",
-                date.beginning_of_month,
-                date.end_of_month)
+          where(created_at: month_start...month_start.next_month)
            .where("purchases.price_cents > 0")
     end
 end
