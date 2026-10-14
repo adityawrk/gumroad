@@ -125,6 +125,123 @@ describe Purchase::HandleFailedRefundService do
       expect(purchase.stripe_partially_refunded?).to eq(false)
     end
 
+    context "when the failed refund suppressed a call calendar invite" do
+      let(:seller) { create(:user, created_at: 31.days.ago) }
+      let(:integration) { create(:google_calendar_integration) }
+      let(:product) do
+        create(:call_product, :available_for_a_year, user: seller, price_cents: 2000, active_integrations: [integration])
+      end
+      let(:purchase) do
+        create(:call_purchase,
+               link: product,
+               seller:,
+               merchant_account:,
+               price_cents: 2000,
+               total_transaction_cents: 2000)
+      end
+      let(:call) { purchase.call }
+
+      before { GoogleCalendarInviteJob.jobs.clear }
+
+      it "schedules the invite after restoring a direct call purchase" do
+        expect do
+          described_class.new(refund:).perform
+        end.to change(GoogleCalendarInviteJob.jobs, :size).by(1)
+
+        expect(GoogleCalendarInviteJob.jobs.last.fetch("args")).to eq([call.id])
+      end
+
+      it "does not schedule another invite when the call already has an event" do
+        call.update!(google_calendar_event_id: "existing_event_id")
+
+        expect do
+          described_class.new(refund:).perform
+        end.not_to change(GoogleCalendarInviteJob.jobs, :size)
+      end
+
+      it "retries a missed invite enqueue after the reversal committed" do
+        first_attempt = described_class.new(refund:)
+        allow(first_attempt.purchase).to receive(:update_creator_analytics_cache).and_call_original
+        allow(first_attempt.purchase).to receive(:send_to_elasticsearch).and_call_original
+        allow(first_attempt.purchase).to receive(:enqueue_update_sales_related_products_infos_job).and_call_original
+        allow(GoogleCalendarInviteJob).to receive(:perform_async).with(call.id).and_raise("Redis unavailable")
+
+        expect do
+          first_attempt.perform
+        end.to raise_error("Redis unavailable")
+        expect(refund.reload.balance_reversed_on_failure).to be(true)
+        expect(GoogleCalendarInviteJob.jobs).to be_empty
+        expect(first_attempt.purchase).to have_received(:update_creator_analytics_cache).with(force: true)
+        expect(first_attempt.purchase).to have_received(:send_to_elasticsearch).with("index")
+        expect(first_attempt.purchase).to have_received(:enqueue_update_sales_related_products_infos_job)
+
+        allow(GoogleCalendarInviteJob).to receive(:perform_async).and_call_original
+
+        expect do
+          described_class.new(refund:).perform
+        end.to change(GoogleCalendarInviteJob.jobs, :size).by(1)
+        expect(GoogleCalendarInviteJob.jobs.last.fetch("args")).to eq([call.id])
+      end
+
+      it "schedules only the gift receiver's invite after restoring a gifted call" do
+        purchase.update!(is_gift_sender_purchase: true)
+        giftee_purchase = create(:call_purchase,
+                                 link: product,
+                                 purchase_state: "gift_receiver_purchase_successful",
+                                 is_gift_receiver_purchase: true,
+                                 stripe_refunded: true)
+        create(:gift, link: product, gifter_purchase: purchase, giftee_purchase:)
+        giftee_call = giftee_purchase.call
+        GoogleCalendarInviteJob.jobs.clear
+        expect(Call.find(call.id).eligible_for_google_calendar_invite?).to be(false)
+        expect(Call.find(giftee_call.id).eligible_for_google_calendar_invite?).to be(false)
+
+        described_class.new(refund:).perform
+
+        expect(Call.find(call.id).eligible_for_google_calendar_invite?).to be(false)
+        expect(Call.find(giftee_call.id).eligible_for_google_calendar_invite?).to be(true)
+        expect(GoogleCalendarInviteJob.jobs.map { |job| job.fetch("args") }).to eq([[giftee_call.id]])
+      end
+    end
+
+    context "when the failed refund suppressed a bundled call calendar invite" do
+      let(:seller) { create(:user, created_at: 31.days.ago) }
+      let(:integration) { create(:google_calendar_integration) }
+      let(:product) { create(:product, :bundle, user: seller, price_cents: 2000) }
+      let(:purchase) do
+        create(:purchase_with_balance,
+               link: product,
+               seller:,
+               merchant_account:,
+               price_cents: 2000,
+               total_transaction_cents: 2000,
+               is_bundle_purchase: true)
+      end
+      let!(:product_purchase) do
+        create(:call_purchase,
+               link: create(:call_product, :available_for_a_year, user: seller, active_integrations: [integration]),
+               seller:,
+               merchant_account:,
+               purchase_state: "successful",
+               stripe_refunded: true,
+               is_bundle_product_purchase: true)
+      end
+
+      before do
+        create(:bundle_product_purchase, bundle_purchase: purchase, product_purchase:)
+        GoogleCalendarInviteJob.jobs.clear
+      end
+
+      it "schedules the bundled call after restoring its purchase" do
+        expect do
+          described_class.new(refund:).perform
+        end.to change(GoogleCalendarInviteJob.jobs, :size).by(1)
+
+        expect(product_purchase.reload.stripe_refunded?).to be(false)
+        expect(GoogleCalendarInviteJob.jobs.last.fetch("args")).to eq([product_purchase.call.id])
+      end
+    end
+
     it "refreshes product recommendation eligibility after restoring the sale" do
       SendToElasticsearchWorker.jobs.clear
 

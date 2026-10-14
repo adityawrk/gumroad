@@ -11,11 +11,65 @@ describe GoogleCalendarInviteJob do
     let(:gcal_api) { instance_double(GoogleCalendarApi) }
 
     before do
+      create(:merchant_account, user: nil, charge_processor_merchant_id: "calendar_job_#{SecureRandom.hex(12)}")
       allow(Call).to receive(:find).with(call.id).and_return(call)
       allow(call).to receive(:link).and_return(link)
       allow(call.purchase).to receive(:purchaser).and_return(double(email: buyer_email))
       allow(link).to receive(:get_integration).and_return(google_calendar_integration)
       allow(GoogleCalendarApi).to receive(:new).and_return(gcal_api)
+    end
+
+    context "when the purchase is still in progress" do
+      before { call.purchase.update_column(:purchase_state, "in_progress") }
+
+      it "does not create a Google Calendar event" do
+        expect(call.eligible_for_google_calendar_invite?).to be(false)
+        expect(gcal_api).not_to receive(:insert_event)
+
+        described_class.new.perform(call.id)
+      end
+    end
+
+    context "when the call is no longer eligible" do
+      before do
+        call.purchase.update!(stripe_refunded: true)
+        create(:refund, purchase: call.purchase, amount_cents: call.purchase.price_cents)
+      end
+
+      it "does not create a Google Calendar event" do
+        expect(call.eligible_for_google_calendar_invite?).to be(false)
+        expect(gcal_api).not_to receive(:insert_event)
+
+        described_class.new.perform(call.id)
+      end
+    end
+
+    context "when the call belongs to the gift sender" do
+      before { call.purchase.update!(is_gift_sender_purchase: true) }
+
+      it "does not create a Google Calendar event" do
+        expect(call.eligible_for_google_calendar_invite?).to be(false)
+        expect(gcal_api).not_to receive(:insert_event)
+
+        described_class.new.perform(call.id)
+      end
+    end
+
+    context "when the call purchase was partially refunded" do
+      before do
+        call.purchase.update!(stripe_partially_refunded: true)
+        create(:refund, purchase: call.purchase, amount_cents: call.purchase.price_cents / 2)
+        allow(call).to receive(:google_calendar_event_id).and_return(nil)
+      end
+
+      it "still creates a Google Calendar event" do
+        api_response = double(success?: true, parsed_response: { "id" => "new_event_id" })
+
+        expect(call.eligible_for_google_calendar_invite?).to be(true)
+        expect(gcal_api).to receive(:insert_event).and_return(api_response)
+
+        described_class.new.perform(call.id)
+      end
     end
 
     context "when the call already has a Google Calendar event ID" do
@@ -46,8 +100,10 @@ describe GoogleCalendarInviteJob do
       end
 
       context "when the Google Calendar integration is present" do
+        let(:event_id) { Digest::SHA256.hexdigest("gumroad-call-#{call.external_id}") }
         let(:event) do
           {
+            id: event_id,
             summary: "Call with #{buyer_email}",
             description: "Scheduled call for #{link.name}",
             start: { dateTime: call.start_time.iso8601 },
@@ -66,7 +122,7 @@ describe GoogleCalendarInviteJob do
 
           it "creates a Google Calendar event and updates the call" do
             expect(gcal_api).to receive(:insert_event).with(google_calendar_integration.calendar_id, event, access_token: google_calendar_integration.access_token)
-            expect(call).to receive(:update).with(google_calendar_event_id: "new_event_id")
+            expect(call).to receive(:update!).with(google_calendar_event_id: event_id)
             described_class.new.perform(call.id)
           end
         end
@@ -85,7 +141,22 @@ describe GoogleCalendarInviteJob do
             expect(gcal_api).to receive(:refresh_token).with(google_calendar_integration.refresh_token)
             expect(google_calendar_integration).to receive(:update).with(access_token: "new_access_token")
             expect(gcal_api).to receive(:insert_event).with(google_calendar_integration.calendar_id, event, access_token: "new_access_token")
-            expect(call).to receive(:update).with(google_calendar_event_id: "new_event_id")
+            expect(call).to receive(:update!).with(google_calendar_event_id: event_id)
+            described_class.new.perform(call.id)
+          end
+        end
+
+        context "when the deterministic event ID already exists" do
+          let(:duplicate_response) { double(success?: false, code: 409) }
+
+          before do
+            allow(gcal_api).to receive(:insert_event).and_return(duplicate_response)
+          end
+
+          it "records the existing event instead of creating a second identity" do
+            expect(gcal_api).to receive(:insert_event).with(google_calendar_integration.calendar_id, event, access_token: google_calendar_integration.access_token)
+            expect(call).to receive(:update!).with(google_calendar_event_id: event_id)
+
             described_class.new.perform(call.id)
           end
         end

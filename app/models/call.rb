@@ -50,6 +50,23 @@ class Call < ApplicationRecord
     purchase.successful_and_not_reversed?(include_gift: true)
   end
 
+  def eligible_for_google_calendar_invite?
+    return false if purchase.is_gift_sender_purchase?
+
+    !purchase.stripe_refunded? &&
+      purchase.chargeback_date.nil? &&
+      purchase.purchase_state.in?(Purchase::GOOGLE_CALENDAR_INVITE_SUCCESS_STATES)
+  end
+
+  def send_google_calendar_invites
+    return unless eligible_for_google_calendar_invite?
+    return if google_calendar_event_id.present?
+
+    if link.has_integration?(Integration.type_for(Integration::GOOGLE_CALENDAR))
+      GoogleCalendarInviteJob.perform_async(id)
+    end
+  end
+
   private
     def start_time_is_before_end_time
       return if start_time.blank? || end_time.blank?
@@ -93,11 +110,5 @@ class Call < ApplicationRecord
 
       ContactingCreatorMailer.upcoming_call_reminder(id).deliver_later(wait_until: reminder_time)
       CustomerMailer.upcoming_call_reminder(id).deliver_later(wait_until: reminder_time)
-    end
-
-    def send_google_calendar_invites
-      if link.has_integration?(Integration.type_for(Integration::GOOGLE_CALENDAR))
-        GoogleCalendarInviteJob.perform_async(id)
-      end
     end
 end

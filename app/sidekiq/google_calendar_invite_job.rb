@@ -5,6 +5,7 @@ class GoogleCalendarInviteJob
 
   def perform(call_id)
     call = Call.find(call_id)
+    return unless call.eligible_for_google_calendar_invite?
     return if call.google_calendar_event_id.present?
 
     link = call.link
@@ -14,8 +15,10 @@ class GoogleCalendarInviteJob
     return unless google_calendar_integration
 
     gcal_api = GoogleCalendarApi.new
+    event_id = Digest::SHA256.hexdigest("gumroad-call-#{call.external_id}")
 
     event = {
+      id: event_id,
       summary: "Call with #{buyer}",
       description: "Scheduled call for #{link.name}",
       start: {
@@ -34,8 +37,8 @@ class GoogleCalendarInviteJob
 
     response = insert_or_refresh_and_insert_event(gcal_api, google_calendar_integration, event)
 
-    if response.success?
-      call.update(google_calendar_event_id: response.parsed_response["id"])
+    if response.success? || response.code == 409
+      call.update!(google_calendar_event_id: event_id)
     else
       Rails.logger.error "Failed to insert Google Calendar event: #{response.parsed_response}"
     end
