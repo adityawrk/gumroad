@@ -230,6 +230,36 @@ for (const surface of ["sticky", "inline"] as const) {
       }
     });
 
+    it.each([
+      [{ type: "percent", percents: 50 } as const, "2400"],
+      [{ type: "fixed", cents: 500 } as const, "1700"],
+    ])("preserves the entered PWYW amount on an option excluded from a $type code", (discount, eligiblePrice) => {
+      const scopedCode: ProductDiscount = {
+        valid: true,
+        code: "SCOPED",
+        discount: {
+          ...halfOff.discount,
+          ...discount,
+          option_ids_by_product: { [product.id]: ["standard"] },
+        },
+      };
+      const { bar } = renderLayout(
+        { ...product, options: [option("standard"), option("deluxe")], pwyw: { suggested_price_cents: null } },
+        scopedCode,
+      );
+      fireEvent.click(screen.getByRole("radio", { name: "standard" }));
+      fireEvent.change(screen.getByLabelText("Name a fair price:"), { target: { value: "12" } });
+      expect(checkoutParams(getCta(bar, surface, "I want this!")).get("price")).toBe(eligiblePrice);
+
+      fireEvent.click(screen.getByRole("radio", { name: "deluxe" }));
+      fireEvent.change(screen.getByLabelText("Name a fair price:"), { target: { value: "12" } });
+      const cta = getCta(bar, surface, "I want this!");
+      expect(fireEvent.click(cta)).toBe(true);
+      expect(checkoutParams(cta).get("option")).toBe("deluxe");
+      expect(checkoutParams(cta).get("price")).toBe("1200");
+      expect(checkoutParams(cta).get("code")).toBe("SCOPED");
+    });
+
     it("lets a free product's CTA continue without the buyer typing an amount", () => {
       const { bar } = renderLayout({
         ...product,
