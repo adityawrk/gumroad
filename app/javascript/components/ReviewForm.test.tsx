@@ -401,3 +401,38 @@ describe("ReviewForm upload context", () => {
     });
   });
 });
+
+describe("review rating focus", () => {
+  it("keeps keyboard selection in the rating group", () => {
+    render(withProviders(form()));
+    const star = screen.getByRole<HTMLElement>("radio", { name: "3 stars" });
+    star.focus();
+
+    fireEvent.click(star, { detail: 0 });
+
+    expect(document.activeElement).toBe(star);
+    expect(screen.getByRole("radio", { name: "3 stars", checked: true })).toBeTruthy();
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: "Post review" }).disabled).toBe(false);
+  });
+
+  it("keeps the pointer shortcut to the written review", () => {
+    render(withProviders(form()));
+
+    fireEvent.click(screen.getByRole("radio", { name: "3 stars" }), { detail: 1 });
+
+    expect(document.activeElement).toBe(screen.getByRole("textbox"));
+  });
+});
+
+describe("reselecting the current rating", () => {
+  it("keeps the pointer shortcut when the chosen star is already selected", () => {
+    render(withProviders(form()));
+    const star = screen.getByRole<HTMLElement>("radio", { name: "3 stars" });
+    fireEvent.click(star, { detail: 1 });
+    star.focus();
+
+    fireEvent.click(star, { detail: 1 });
+
+    expect(document.activeElement).toBe(screen.getByRole("textbox"));
+  });
+});
