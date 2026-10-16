@@ -47,13 +47,14 @@ class UtmLinkSaleAttributionJob
     # Latest visit per UtmLink, newest first. purchases.created_at is second-precision, so the
     # exclusive bound is the next second and a visit in the purchase's own second still counts.
     def latest_visits_until(browser_guid, purchased_at)
+      visits_after = (purchased_at - ATTRIBUTION_WINDOW).beginning_of_day
       visits_before = purchased_at + 1.second
 
       latest_visits_query = <<~SQL.squish
         SELECT utm_link_id, MAX(created_at) AS latest_visit_at
         FROM utm_link_visits
         WHERE browser_guid = '#{ActiveRecord::Base.connection.quote_string(browser_guid)}'
-        AND created_at >= '#{ATTRIBUTION_WINDOW.ago.beginning_of_day.strftime("%Y-%m-%d %H:%M:%S")}'
+        AND created_at >= '#{visits_after.utc.strftime("%Y-%m-%d %H:%M:%S")}'
         AND created_at < '#{visits_before.utc.strftime("%Y-%m-%d %H:%M:%S")}'
         GROUP BY utm_link_id
       SQL
@@ -66,7 +67,7 @@ class UtmLinkSaleAttributionJob
           AND utm_link_visits.created_at = latest_visits.latest_visit_at
         SQL
         .where(browser_guid:)
-        .where("utm_link_visits.created_at >= ?", ATTRIBUTION_WINDOW.ago.beginning_of_day)
+        .where("utm_link_visits.created_at >= ?", visits_after)
         .where("utm_link_visits.created_at < ?", visits_before)
         .order(created_at: :desc, id: :desc)
     end
