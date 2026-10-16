@@ -1,7 +1,7 @@
 import { ArrowLeft, ArrowRight, SearchMinus, SearchPlus, X } from "@boxicons/react";
 import { usePage } from "@inertiajs/react";
 import type { Book, Rendition, Location as EpubLocation } from "epubjs";
-import type { PDFDocumentProxy } from "pdfjs-dist/legacy/build/pdf.mjs";
+import type { PDFDocumentLoadingTask, PDFDocumentProxy } from "pdfjs-dist/legacy/build/pdf.mjs";
 import type { PDFSinglePageViewer } from "pdfjs-dist/legacy/web/pdf_viewer.mjs";
 import * as React from "react";
 
@@ -205,6 +205,7 @@ const PdfReader = ({
   const [pageNumber, setPageNumber] = React.useState(1);
   const [pageCount, setPageCount] = React.useState(0);
   const [isLoading, setIsLoading] = React.useState(true);
+  const [readerError, setReaderError] = React.useState(false);
   const [pageTooltip, setPageTooltip] = React.useState<{ left: number; pageNumber: number } | null>(null);
   const contentRef = React.useRef<HTMLDivElement>(null);
   const pdfViewerRef = React.useRef<PDFSinglePageViewer | null>(null);
@@ -239,6 +240,7 @@ const PdfReader = ({
     let isCancelled = false;
     let teardown: (() => void) | undefined;
     let releaseHeightSync: (() => void) | undefined;
+    let loadingTask: PDFDocumentLoadingTask | undefined;
 
     const resumeFromLastLocation = (pageCount: number) => {
       const storedCookieLocation = getMediaLocationFromCookies(read_id);
@@ -330,7 +332,9 @@ const PdfReader = ({
         pdfSinglePageViewer.cleanup();
       };
 
-      const pdf = await pdfjs.getDocument(url).promise;
+      loadingTask = pdfjs.getDocument(url);
+      const pdf = await loadingTask.promise;
+      loadingTask = undefined;
       // Closed while the document was downloading and parsing: release it instead of handing it to
       // a viewer that is already gone.
       // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- set by the effect's cleanup closure, which the compiler cannot see from here
@@ -361,7 +365,20 @@ const PdfReader = ({
       pdfSinglePageViewer.setDocument(pdf);
       pdfLinkService.setDocument(pdf, null);
     };
-    void showDocument();
+    void showDocument().catch(() => {
+      void loadingTask?.destroy().catch((error: unknown) => {
+        if (typeof reportError === "function") reportError(error);
+      });
+      loadingTask = undefined;
+      if (isCancelled) return;
+      releaseHeightSync?.();
+      releaseHeightSync = undefined;
+      teardown?.();
+      teardown = undefined;
+      pdfViewerRef.current = null;
+      setIsLoading(false);
+      setReaderError(true);
+    });
 
     return () => {
       isCancelled = true;
@@ -388,7 +405,7 @@ const PdfReader = ({
 
   return (
     <div style={{ display: "contents" }}>
-      {isLoading ? <ReaderLoadingOverlay /> : null}
+      {readerError ? <ReaderErrorOverlay fileType="PDF" /> : isLoading ? <ReaderLoadingOverlay /> : null}
       <div role="application" className="scoped-tailwind-preflight flex h-dvh flex-col">
         <div role="menubar" className="flex text-sm md:text-base">
           <div className="border-r">
@@ -794,7 +811,7 @@ const EpubReader = ({
 
   return (
     <div style={{ display: "contents" }}>
-      {readerError ? <ReaderErrorOverlay /> : isLoading ? <ReaderLoadingOverlay /> : null}
+      {readerError ? <ReaderErrorOverlay fileType="EPUB" /> : isLoading ? <ReaderLoadingOverlay /> : null}
       <div role="application" className="scoped-tailwind-preflight flex h-dvh flex-col">
         <div role="menubar" className="flex text-sm md:text-base">
           <div className="border-r">
@@ -924,13 +941,13 @@ const ReaderLoadingOverlay = () => (
   </div>
 );
 
-const ReaderErrorOverlay = () => (
+const ReaderErrorOverlay = ({ fileType }: { fileType: "PDF" | "EPUB" }) => (
   <div
     role="alert"
     className="scoped-tailwind-preflight absolute flex size-full flex-col items-center justify-center gap-4 bg-background p-6 text-center"
     style={{ zIndex: "var(--z-index-tooltip)" }}
   >
-    <h3>We couldn&apos;t open this EPUB</h3>
+    <h3>We couldn&apos;t open this {fileType}</h3>
     <p>You can try loading it again or go back to your files.</p>
     <div className="flex gap-3">
       <Button onClick={() => history.back()}>Back</Button>

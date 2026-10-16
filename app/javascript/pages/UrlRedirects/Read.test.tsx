@@ -224,6 +224,90 @@ describe("PDF reader teardown", () => {
     vi.clearAllMocks();
   });
 
+  it.each(["InvalidPDFException", "UnexpectedResponseException", "PasswordException", "MissingPDFException"])(
+    "offers recovery instead of spinning forever after %s",
+    async (name) => {
+      const error = Object.assign(new Error("The PDF cannot be loaded"), { name });
+      const destroyLoadingTask = vi.fn(() => Promise.resolve());
+      mocks.getDocument.mockImplementation(() => ({ promise: Promise.reject(error), destroy: destroyLoadingTask }));
+      render(<Read />);
+
+      expect(await screen.findByRole("alert")).toBeTruthy();
+      expect(screen.getByText("We couldn't open this PDF")).toBeTruthy();
+      expect(screen.getAllByRole("button", { name: "Back" }).length).toBeGreaterThan(0);
+      expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
+      expect(screen.queryByText("One moment while we prepare your reading experience")).toBeNull();
+      expect(mocks.off).toHaveBeenCalledWith("pagesinit", expect.any(Function));
+      expect(mocks.viewer.cleanup).toHaveBeenCalledTimes(1);
+      expect(destroyLoadingTask).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("cleans up only once when a failed PDF reader is closed", async () => {
+    const destroyLoadingTask = vi.fn(() => Promise.resolve());
+    mocks.getDocument.mockImplementation(() => ({
+      promise: Promise.reject(new Error("Invalid PDF")),
+      destroy: destroyLoadingTask,
+    }));
+    const { unmount } = render(<Read />);
+    await screen.findByRole("alert");
+
+    unmount();
+
+    expect(mocks.viewer.cleanup).toHaveBeenCalledTimes(1);
+    expect(destroyLoadingTask).toHaveBeenCalledTimes(1);
+  });
+
+  it("handles a document initialization error before a loading task exists", async () => {
+    mocks.getDocument.mockImplementation(() => {
+      throw new Error("Invalid URL");
+    });
+    render(<Read />);
+
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    expect(screen.queryByText("One moment while we prepare your reading experience")).toBeNull();
+    expect(mocks.viewer.cleanup).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores a failed PDF load after leaving the reader", async () => {
+    let rejectDocument: (reason: Error) => void = () => {};
+    const promise = new Promise((_, reject) => {
+      rejectDocument = reject;
+    });
+    const destroyLoadingTask = vi.fn(() => Promise.resolve());
+    mocks.getDocument.mockReturnValue({ promise, destroy: destroyLoadingTask });
+    const { unmount } = render(<Read />);
+    await waitFor(() => expect(mocks.getDocument).toHaveBeenCalled());
+    unmount();
+
+    await act(async () => {
+      rejectDocument(new Error("Network disconnected"));
+      await Promise.resolve();
+    });
+
+    expect(destroyLoadingTask).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(mocks.viewer.cleanup).toHaveBeenCalledTimes(1);
+  });
+
+  it("still offers recovery if releasing a failed loading task rejects", async () => {
+    const cleanupError = new Error("Worker could not be released");
+    const reportError = vi.fn();
+    vi.stubGlobal("reportError", reportError);
+    try {
+      mocks.getDocument.mockImplementation(() => ({
+        promise: Promise.reject(new Error("Invalid PDF")),
+        destroy: vi.fn(() => Promise.reject(cleanupError)),
+      }));
+      render(<Read />);
+
+      expect(await screen.findByRole("alert")).toBeTruthy();
+      expect(reportError).toHaveBeenCalledWith(cleanupError);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("removes its event-bus handlers and cleans up the viewer on unmount", async () => {
     // Regression for #6433: the handlers and the viewer were created inside useRunOnce with no
     // teardown, so navigating away from the reader left them attached for the page's lifetime.
