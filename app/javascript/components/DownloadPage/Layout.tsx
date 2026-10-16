@@ -317,17 +317,21 @@ const CallDetails = ({ call }: { call: Call }) => {
 
   const formattedStartDate = formatDate(startTime);
   const formattedEndDate = formatDate(endTime);
+  const formatTimeZone = (date: Date) =>
+    Intl.DateTimeFormat("en-US", { timeZoneName: "short" })
+      .formatToParts(date)
+      .find((part) => part.type === "timeZoneName")?.value ?? "";
+  const startTimeZone = formatTimeZone(startTime);
+  const endTimeZone = formatTimeZone(endTime);
+  const formattedTimeRange =
+    startTimeZone === endTimeZone
+      ? `${formatTime(startTime)} - ${formatTime(endTime)} ${startTimeZone}`
+      : `${formatTime(startTime)} ${startTimeZone} - ${formatTime(endTime)} ${endTimeZone}`;
 
   return (
     <Card>
       <CardContent>
-        <h5 className="grow font-bold">
-          {`${formatTime(startTime)} - ${formatTime(endTime)} ${
-            Intl.DateTimeFormat("en-US", { timeZoneName: "short" })
-              .formatToParts(new Date())
-              .find((part) => part.type === "timeZoneName")?.value ?? ""
-          }`}
-        </h5>
+        <h5 className="grow font-bold">{formattedTimeRange}</h5>
         {formattedStartDate === formattedEndDate ? formattedStartDate : `${formattedStartDate} - ${formattedEndDate}`}
       </CardContent>
       {call.url ? (
