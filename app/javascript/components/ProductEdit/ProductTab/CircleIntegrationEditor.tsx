@@ -87,7 +87,7 @@ export const CircleIntegrationEditor = ({
     onChange({
       name: "circle",
       api_key: apiKey,
-      keep_inactive_members: false,
+      keep_inactive_members: integration?.keep_inactive_members ?? false,
       integration_details: {
         community_id: selectedCommunityId.toString(),
         space_group_id: selectedSpaceGroupId.toString(),
