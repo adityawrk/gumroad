@@ -125,20 +125,23 @@ const UpsellsPage = (props: UpsellsPageProps) => {
 
   const activeRequest = React.useRef<{ cancel: () => void } | null>(null);
   const loadUpsells = asyncVoid(async ({ page, query, sort }: QueryParams) => {
+    activeRequest.current?.cancel();
+    setIsLoading(true);
+    const request = getPagedUpsells(page || 1, query, sort);
+    activeRequest.current = request;
     try {
-      activeRequest.current?.cancel();
-      setIsLoading(true);
-
-      const request = getPagedUpsells(page || 1, query, sort);
-      activeRequest.current = request;
-
-      setState(await request.response);
-      setIsLoading(false);
-      activeRequest.current = null;
+      const response = await request.response;
+      if (activeRequest.current !== request) return;
+      setState(response);
     } catch (e) {
-      if (e instanceof AbortError) return;
+      if (e instanceof AbortError || activeRequest.current !== request) return;
       assertResponseError(e);
       showAlert(e.message, "error");
+    } finally {
+      if (activeRequest.current === request) {
+        setIsLoading(false);
+        activeRequest.current = null;
+      }
     }
   });
   const debouncedLoadUpsells = useDebouncedCallback(() => loadUpsells({ page: 1, query: searchQuery, sort }), 300);
