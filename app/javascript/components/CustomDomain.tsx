@@ -38,6 +38,14 @@ const CustomDomain = ({
     message: verificationStatus?.message || "",
   });
   const uid = React.useId();
+  const verificationRequest = React.useRef(0);
+
+  React.useEffect(
+    () => () => {
+      verificationRequest.current += 1;
+    },
+    [customDomain, productId],
+  );
 
   React.useEffect(() => {
     let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -51,6 +59,7 @@ const CustomDomain = ({
   }, [verificationInfo.buttonState]);
 
   const verifyCustomDomain = asyncVoid(async () => {
+    const requestId = ++verificationRequest.current;
     setVerificationInfo({ buttonState: "verifying", state: "verifying", message: "" });
 
     try {
@@ -62,9 +71,11 @@ const CustomDomain = ({
       });
       const responseData = cast<{ success: boolean; message: string }>(await response.json());
       if (!responseData.success) throw new ResponseError(responseData.message);
+      if (requestId !== verificationRequest.current) return;
       setVerificationInfo({ buttonState: "success", state: "success", message: responseData.message });
     } catch (e) {
       assertResponseError(e);
+      if (requestId !== verificationRequest.current) return;
       setVerificationInfo({ buttonState: "failure", state: "failure", message: e.message });
     }
   });
@@ -90,6 +101,7 @@ const CustomDomain = ({
           type="text"
           value={customDomain}
           onChange={(e) => {
+            verificationRequest.current += 1;
             setCustomDomain(e.target.value);
             setVerificationInfo({ buttonState: "initial", state: "initial", message: "" });
           }}
