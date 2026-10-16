@@ -24,6 +24,7 @@ class Exports::PurchaseExportService
     "PayPal Fee Amount", "Stripe Fee Amount"
   ].freeze
   SYNCHRONOUS_EXPORT_THRESHOLD = 2_000
+  US_ZIP_CODE_LENGTH = 5
 
   # Human-readable labels for the non-card payment methods stored in purchases.card_type.
   # Anything not listed here (visa, mastercard, Link, ...) is charged as a card, so the
@@ -174,7 +175,7 @@ class Exports::PurchaseExportService
         "Tax Included in Price?" => purchase.tax_included_in_price&.then { _1 ? 1 : 0 },
         "Street Address" => pseudo_transliterate(purchase.street_address),
         "City" => pseudo_transliterate(purchase.city),
-        "Zip Code" => purchase.zip_code && purchase.zip_code.to_s.rjust(5, "0"),
+        "Zip Code" => postal_code_for_export(purchase),
         "State" => pseudo_transliterate(purchase.state_or_from_ip_address),
         "Country" => pseudo_transliterate(purchase.country_or_from_ip_address),
         "Referrer" => purchase.referrer,
@@ -245,6 +246,13 @@ class Exports::PurchaseExportService
     def payment_type_label(card_type)
       return if card_type.blank?
       PAYMENT_TYPE_LABELS.fetch(card_type, "Card")
+    end
+
+    def postal_code_for_export(purchase)
+      postal_code = purchase.zip_code
+      return postal_code if postal_code.blank? || Compliance::Countries.find_by_name(purchase.country_or_from_ip_address) != Compliance::Countries::USA
+
+      postal_code.rjust(US_ZIP_CODE_LENGTH, "0")
     end
 
     def pseudo_transliterate(string)
