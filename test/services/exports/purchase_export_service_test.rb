@@ -238,6 +238,30 @@ class PurchaseExportServiceTest < ActiveSupport::TestCase
     assert_equal "United States", field_value(rows[3], "Country")
   end
 
+  test "preserves international postal codes" do
+    { "Australia" => "2000", "New Zealand" => "6011", "Iceland" => "101", "United Kingdom" => "SW1A 1AA" }.each do |country, postal_code|
+      @purchase.update!(country:, zip_code: postal_code)
+
+      assert_equal postal_code, field_value(last_data_row, "Zip Code"), country
+    end
+  end
+
+  test "retains leading zeroes and legacy padding for US ZIP codes" do
+    { "2139" => "02139", "02139" => "02139", "02139-1234" => "02139-1234" }.each do |stored_zip, exported_zip|
+      @purchase.update!(country: "United States", zip_code: stored_zip)
+
+      assert_equal exported_zip, field_value(last_data_row, "Zip Code")
+    end
+  end
+
+  test "does not invent a postal code when none was recorded" do
+    @purchase.update!(country: "Australia", zip_code: nil)
+    assert_nil field_value(last_data_row, "Zip Code")
+
+    @purchase.update!(zip_code: "")
+    assert_equal "", field_value(last_data_row, "Zip Code")
+  end
+
   test "includes buyers email if buyer has an account" do
     @purchase.update!(email: "some@email.com", purchaser: create_user(email: "some.other@email.com"))
 
