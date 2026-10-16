@@ -96,6 +96,80 @@ describe Product::Stats do
     end
   end
 
+  describe "#total_usd_cents_earned_by_user" do
+    let(:product) { create(:product, :is_collab, price_cents: 100_00, collaborator_cut: 25_00) }
+    let(:seller) { product.user }
+    let(:collaborator) { product.collaborator.affiliate_user }
+    let!(:purchase) { create(:purchase, :with_custom_fee, link: product, affiliate: product.collaborator, fee_cents: 16_00) }
+
+    before do
+      create(:affiliate_credit, purchase:, affiliate: product.collaborator, affiliate_user: collaborator,
+                                basis_points: 25_00, amount_cents: 21_00, fee_cents: 4_00)
+      purchase.reload
+      index_model_records(Purchase)
+    end
+
+    it "deducts partial refunds from each collaborator's gross revenue share" do
+      expect(product.total_usd_cents_earned_by_user(seller)).to eq(75_00)
+      expect(product.total_usd_cents_earned_by_user(collaborator)).to eq(25_00)
+
+      purchase.refund_purchase!(FlowOfFunds.build_simple_flow_of_funds(Currency::USD, 20_00), seller.id)
+      index_model_records(Purchase)
+
+      expect(product.total_usd_cents_earned_by_user(seller)).to eq(60_00)
+      expect(product.total_usd_cents_earned_by_user(collaborator)).to eq(20_00)
+    end
+
+    it "nets successive partial refunds and excludes a fully refunded sale" do
+      2.times { purchase.refund_purchase!(FlowOfFunds.build_simple_flow_of_funds(Currency::USD, 20_00), seller.id) }
+      index_model_records(Purchase)
+
+      expect(product.total_usd_cents_earned_by_user(seller)).to eq(45_00)
+      expect(product.total_usd_cents_earned_by_user(collaborator)).to eq(15_00)
+
+      purchase.refund_purchase!(FlowOfFunds.build_simple_flow_of_funds(Currency::USD, 60_00), seller.id)
+      index_model_records(Purchase)
+
+      expect(product.total_usd_cents_earned_by_user(seller)).to eq(0)
+      expect(product.total_usd_cents_earned_by_user(collaborator)).to eq(0)
+    end
+
+    it "deducts refunds on sales without an affiliate credit and respects date filters" do
+      organic_purchase = create(:purchase, link: product, price_cents: 10_00, created_at: 1.day.ago)
+      organic_purchase.refund_purchase!(FlowOfFunds.build_simple_flow_of_funds(Currency::USD, 2_00), seller.id)
+      index_model_records(Purchase)
+
+      expect(product.total_usd_cents_earned_by_user(seller)).to eq(83_00)
+      expect(product.total_usd_cents_earned_by_user(seller, created_after: 1.hour.ago)).to eq(75_00)
+      expect(product.total_usd_cents_earned_by_user(collaborator)).to eq(25_00)
+    end
+
+    it "uses the persisted rounding of an uneven one-cent refund" do
+      purchase.refund_purchase!(FlowOfFunds.build_simple_flow_of_funds(Currency::USD, 1), seller.id)
+      index_model_records(Purchase)
+
+      expect(purchase.affiliate_credit.amount_partially_refunded_cents).to eq(1)
+      expect(purchase.affiliate_credit.fee_partially_refunded_cents).to eq(0)
+      expect(product.total_usd_cents_earned_by_user(seller)).to eq(75_00)
+      expect(product.total_usd_cents_earned_by_user(collaborator)).to eq(24_99)
+    end
+
+    it "excludes lost chargebacks and restores the refunded shares when a dispute is reversed" do
+      purchase.refund_purchase!(FlowOfFunds.build_simple_flow_of_funds(Currency::USD, 20_00), seller.id)
+      purchase.update!(chargeback_date: Time.current)
+      index_model_records(Purchase)
+
+      expect(product.total_usd_cents_earned_by_user(seller)).to eq(0)
+      expect(product.total_usd_cents_earned_by_user(collaborator)).to eq(0)
+
+      purchase.update!(chargeback_reversed: true)
+      index_model_records(Purchase)
+
+      expect(product.total_usd_cents_earned_by_user(seller)).to eq(60_00)
+      expect(product.total_usd_cents_earned_by_user(collaborator)).to eq(20_00)
+    end
+  end
+
   describe "#total_fee_cents", :sidekiq_inline, :elasticsearch_wait_for_refresh do
     it "does not take into account fully refunded, not charged, chargeback not reverted, giftee purchases" do
       product = create(:product, price_cents: 500)

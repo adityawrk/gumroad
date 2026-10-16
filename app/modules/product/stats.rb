@@ -93,7 +93,9 @@ module Product::Stats
         price_cents_total: { sum: { field: "price_cents" } },
         affiliate_cents_total: { sum: { field: "affiliate_credit_amount_cents" } },
         affiliate_fees_total: { sum: { field: "affiliate_credit_fee_cents" } },
-        amount_refunded_cents_total: { sum: { field: for_seller ? "amount_refunded_cents" : "affiliate_credit_amount_partially_refunded_cents" } },
+        amount_refunded_cents_total: { sum: { field: "amount_refunded_cents" } },
+        affiliate_amount_refunded_cents_total: { sum: { field: "affiliate_credit_amount_partially_refunded_cents" } },
+        affiliate_fees_refunded_cents_total: { sum: { field: "affiliate_credit_fee_partially_refunded_cents" } },
       }
     ).merge(extra_search_options)
     if for_seller
@@ -103,9 +105,10 @@ module Product::Stats
     end
     search_result = PurchaseSearchService.search(search_options)
 
-    affiliate_total = search_result.aggregations.affiliate_cents_total.value + search_result.aggregations.affiliate_fees_total.value - search_result.aggregations.amount_refunded_cents_total.value
+    affiliate_total = search_result.aggregations.affiliate_cents_total.value + search_result.aggregations.affiliate_fees_total.value -
+      search_result.aggregations.affiliate_amount_refunded_cents_total.value - search_result.aggregations.affiliate_fees_refunded_cents_total.value
     if for_seller
-      search_result.aggregations.price_cents_total.value - affiliate_total
+      search_result.aggregations.price_cents_total.value - search_result.aggregations.amount_refunded_cents_total.value - affiliate_total
     else
       affiliate_total
     end
